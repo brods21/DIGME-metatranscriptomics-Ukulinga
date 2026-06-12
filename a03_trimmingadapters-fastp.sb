@@ -1,0 +1,72 @@
+#!/bin/bash -login
+
+#SBATCH --time=03:59:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=24G
+#SBATCH --array=1-34
+#SBATCH --job-name a03fastp
+#SBATCH --output=slurm-%A_%a_a03_trimmingAdapters-fastp.out 
+
+cd ${SLURM_SUBMIT_DIR}
+cores=$SLURM_CPUS_PER_TASK
+RAM_NODE=$SLURM_MEM_PER_NODE
+
+echo -e "metaGAAP v. 1.0 - metaGenome Assembly and Annotation Pipeline
+MIT LICENSE - Copyright © 2022 Benucci Jones Broderick
+email: benucci[at]msu[dot]edu\n"
+
+source ../config.yaml
+
+echo -e "\n Running script: a03_trimmingAdapters-fastp.sb \n"
+
+echo -e "\n========== Directories ==========\n"
+echo "mkdir -p $project_dir/outputs/a03_trimmingadapters_fastp"; mkdir -p $project_dir/outputs/a03_trimmingadapters_fastp
+
+echo -e "\n========== Generatinng the array list ==========\n"
+
+sampleID=$(awk -v ArrayTaskID=$SLURM_ARRAY_TASK_ID '$1==ArrayTaskID {print $2}' $project_dir/array/sampleID.array)
+
+echo -e "\n========== Trimming adapters in $sampleID using fastp ==========\n"
+conda activate fastp
+echo "fastp version: `fastp --version`" 
+
+fastp \
+	--thread $cores \
+	--verbose \
+	--detect_adapter_for_pe \
+	--length_required 50 \
+	--cut_front \
+	--cut_right \
+	--trim_poly_g \
+	--trim_poly_x \
+	-i $project_dir/outputs/a02_removePhix_bowtie2/${sampleID}_R1.fastq.gz \
+	-I $project_dir/outputs/a02_removePhix_bowtie2/${sampleID}_R2.fastq.gz \
+	-o $project_dir/outputs/a03_trimmingadapters_fastp/${sampleID}_trimmed_R1.fastq.gz \
+	-O $project_dir/outputs/a03_trimmingadapters_fastp/${sampleID}_trimmed_R2.fastq.gz \
+	-h $project_dir/outputs/a03_trimmingadapters_fastp/${sampleID}_fastp.html \
+	-j $project_dir/outputs/a03_trimmingadapters_fastp/${sampleID}_fastp.json
+
+conda deactivate
+
+echo -e "\n========== Assessing quality after trimming ==========\n"
+conda activate fastqc
+echo -e "FastQC version: `fastqc --version`" 
+
+mkdir $project_dir/outputs/a03_trimmingadapters_fastp/${sampleID}_fastqc/
+
+fastqc \
+	-t $cores \
+	$project_dir/outputs/a03_trimmingadapters_fastp/${sampleID}_trimmed_R1.fastq.gz \
+	$project_dir/outputs/a03_trimmingadapters_fastp/${sampleID}_trimmed_R2.fastq.gz \
+	-o $project_dir/outputs/a03_trimmingadapters_fastp/${sampleID}_fastqc/
+
+conda deactivate
+
+# To extract file name with no extension use ${file%.*}
+echo -e "\n========== Sbatch log ==========\n"
+echo -e "\n Current directory: `pwd` \n"
+echo -e "\n `sacct -u broder49 -j $SLURM_JOB_ID --format=JobID,JobName,Start,End,Elapsed,NCPUS,ReqMem` \n";
+scontrol show job $SLURM_JOB_ID
+

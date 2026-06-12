@@ -1,0 +1,59 @@
+#!/bin/bash -login
+
+#SBATCH --time=23:59:00
+#SBATCH --nodes=1-2
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=32
+#SBATCH --mem=264G
+#SBATCH --job-name 09proteinAnno
+#SBATCH --account colej
+#SBATCH --array=1-18,20-34
+#SBATCH -o slurm-%A_%a_b09_proteinAnno-eggnog.out
+
+cd ${SLURM_SUBMIT_DIR}
+cores="$SLURM_CPUS_PER_TASK"
+RAM="$SLURM_MEM_PER_NODE"
+
+echo -e "\n========== Project paths ==========\n"
+source ../config.yaml
+
+echo -e "metaGAAP v. 1.0 - metaGenome Assembly and Annotation Pipeline
+MIT LICENSE - Copyright © 2022 Benucci Jones Broderick
+email: benucci[at]msu[dot]edu\n"
+
+echo -e "\n I am running: b09_proteinAnnotation-eggnog.sb \n"
+
+echo -e "\n========== Sub-directories ==========\n"
+echo -e "mkdir -p $project_dir/outputs/b09_proteinAnnotation_eggnog_transdecoder/"; mkdir -p $project_dir/outputs/b09_proteinAnnotation_eggnog_transdecoder/
+#echo -e "cd $project_dir/outputs/b02_assembly_spades/"; cd $project_dir/outputs/b02_assembly_spades/
+
+
+
+echo -e "\n========== Generate array list ==========\n"
+
+sampleID=$(awk -v ArrayTaskID=$SLURM_ARRAY_TASK_ID '$1==ArrayTaskID {print $2}' $project_dir/array/sampleID.array)
+
+echo -e "\n========== Proteins annotation using eggnog for file: $sampleID ==========\n"
+
+
+mkdir -p $project_dir/outputs/b09_proteinAnnotation_eggnog_transdecoder/${sampleID}/
+
+conda activate eggnog_updated_1124
+echo -e "version of eggNOG-mapper: `emapper.py --version`" 
+		
+emapper.py \
+	-m mmseqs \
+	--itype CDS \
+	--translate \
+	-i $project_dir/outputs/b02_assembly_spades/${sampleID}/transcripts.fasta.transdecoder.cds \
+	-o $project_dir/outputs/b09_proteinAnnotation_eggnog_transdecoder/${sampleID}/eggnog 
+
+conda deactivate
+
+
+# Kraken/brachen databases https://benlangmead.github.io/aws-indexes/k2
+echo -e "\n========== Sbatch log ==========\n"
+echo -e "\n Current directory: `pwd` \n"
+echo -e "\n `sacct -u broder49 -j $SLURM_JOB_ID --format=JobID,JobName,Start,End,Elapsed,NCPUS,ReqMem` \n"
+scontrol show job $SLURM_JOB_ID
+

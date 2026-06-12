@@ -1,0 +1,54 @@
+#!/bin/bash -login
+
+#SBATCH --time=00:59:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=16G
+#SBATCH --job-name b03_filterCont
+
+cd ${SLURM_SUBMIT_DIR}
+cores="$SLURM_CPUS_PER_TASK"
+RAM="$SLURM_MEM_PER_NODE"
+
+echo -e "\n========== Project paths ==========\n"
+source ../config.yaml
+
+echo -e "\n I am running: 08_filteringscaffolds.sb \n"
+
+echo -e "\n========== Sub-directories ==========\n"
+echo "cd $project_dir/outputs/b02_assembly_spades/"; cd $project_dir/outputs/b02_assembly_spades/
+
+echo -e "\n========== Filtering Contigs to > $LENGTH ==========\n"
+
+for file in $(find $project_dir/outputs/b02_assembly_spades/ -type f -name "scaffolds.fasta"); do
+	
+	sample_dir=$(echo $file | cut -d"/" -f9)
+
+	grep "^>NODE" $file | sed 's/_length_/\t/;s/_cov_/\t/' > $project_dir/outputs/b02_assembly_spades/${sample_dir}/scaffolds.covlength
+
+	cat  $project_dir/outputs/b02_assembly_spades/${sample_dir}/scaffolds.covlength \
+		| awk -v len="$LENGTH" -v cov="$COVERAGE" '$2>=len && $3>=cov' \
+		| sed 's/>//;s/\t/_length_/;s/\t/_cov_/' > $project_dir/outputs/b02_assembly_spades/${sample_dir}/filtered_scaffolds.ids
+
+	awk 'NR==FNR{a[">"$0];next}/^>/{f=0;}($0 in a)||f{print;f=1}' \
+		$project_dir/outputs/b02_assembly_spades/${sample_dir}/filtered_scaffolds.ids \
+		$project_dir/outputs/b02_assembly_spades/${sample_dir}/scaffolds.fasta > \
+		$project_dir/outputs/b02_assembly_spades/${sample_dir}/scaffolds_hq.fasta
+
+	echo -e "\n========= Plotting scaffolds Coverage and Length =========\n"
+	conda activate R
+	cd $project_dir/outputs/b02_assembly_spades/${sample_dir}/
+	Rscript $project_dir/mycode/plotscaffoldsCovLength.R
+	
+	conda deactivate
+
+done
+
+echo -e "\n========== Sbatch log ==========\n"
+echo -e "\n Current directory: `pwd` \n"
+echo -e "\n `sacct -u broder49 -j $SLURM_JOB_ID --format=JobID,JobName,Start,End,Elapsed,NCPUS,ReqMem` \n"
+scontrol show job $SLURM_JOB_ID
+mv $project_dir/mycode/slurm-$SLURM_JOB_ID* $project_dir/slurms/b03_filteringscaffolds.slurm
+
+

@@ -1,0 +1,41 @@
+#!/bin/bash -login
+
+#SBATCH --time=00:05:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=4G
+#SBATCH -A shade-cole-bonito
+#SBATCH --job-name a00Array
+#SBATCH -o slurm-%A_a00_generateArray.out
+
+cd ${SLURM_SUBMIT_DIR}
+cores=$SLURM_CPUS_PER_TASK
+RAM_NODE=$SLURM_MEM_PER_NODE
+
+echo -e "metaGAAP v. 1.0 - metaGenome Assembly and Annotation Pipeline
+MIT LICENSE - Copyright © 2022 Benucci Jones Broderick
+email: benucci[at]msu[dot]edu\n"
+
+source ../config.yaml
+
+echo -e "\n Running script: a00_generateArray.sb \n"
+
+echo -e "\n========== Generating project sub-directories ==========\n"
+echo -e "mkdir -p $project_dir/outputs/"; mkdir -p $project_dir/outputs/
+echo -e "mkdir -p $project_dir/slurms/"; mkdir -p $project_dir/slurms/
+echo -e "mkdir -p $project_dir/testing/"; mkdir -p $project_dir/testing/
+echo -e "mkdir -p $project_dir/array/"; mkdir -p $project_dir/array/
+
+echo -e "\n========== Generate the array file ==========\n"
+ls $rawdata/*R1_001.fastq.gz > $project_dir/array/sampleID.list
+
+ls $rawdata/*R1_001.fastq.gz | cat -n | sed 's/^ *//' \
+	| tr "\t" "/" | cut -d"/" -f1,10 | tr "/" "\t" | sed 's/_R1_001.fastq.gz//' \
+	| sed '1i ArrayTaskID\tSampleID' > $project_dir/array/sampleID.array
+
+echo -e "\n========== Sbatch log ==========\n"
+echo -e "\n Current directory: `pwd` \n"
+echo -e "\n `sacct -u benucci -j $SLURM_JOB_ID --format=JobID,JobName,Start,End,Elapsed,NCPUS,ReqMem` \n"
+scontrol show job $SLURM_JOB_ID
+

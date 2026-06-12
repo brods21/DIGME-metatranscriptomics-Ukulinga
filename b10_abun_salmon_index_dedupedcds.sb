@@ -1,0 +1,55 @@
+#!/bin/bash -login
+
+#SBATCH --time=01:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=160G
+#SBATCH --account colej
+#SBATCH --job-name b10abunsSalmon_index
+#SBATCH -o slurm-%A_%a_b10abun_Salmon_index_cds.out
+
+cd ${SLURM_SUBMIT_DIR}
+cores="$SLURM_CPUS_PER_TASK"
+RAM="$SLURM_MEM_PER_NODE"
+
+echo -e "\n========== Project paths ==========\n"
+source ../config.yaml
+
+echo -e "\n I am running: b10_abun_salmon.sb \n"
+
+echo -e "\n========== Sub-directories ==========\n"
+#echo "mkdir -p $project_dir/outputs/b10_abun_salmon/"; mkdir -p $project_dir/outputs/b10_abun_salmon/
+
+echo -e "\n========== Genrate array list ==========\n"
+
+#sampleID=$(awk -v ArrayTaskID=$SLURM_ARRAY_TASK_ID '$1==ArrayTaskID {print $2}' $project_dir/array/sampleID.array)
+
+#mkdir $project_dir/outputs/b10_abun_salmon/${sampleID}
+
+echo -e "\n========== salmon indexing contig for file: $sampleID ==========\n"
+module purge
+module load Salmon/1.10.1-GCC-12.3.0
+
+cd $project_dir/outputs/b07_predictproteinregions_transdecoder
+pwd
+
+salmon index -i salmon_index -t all.deduped.transdecoder.cds 
+
+echo -e "\n========== salmon indexing contig files ==========\n"
+
+#salmon quant -L -A \
+#	-i $project_id/outputs/b10_abun_salmon/transcript_index.idx \
+#	-1 $project_dir/outputs/a03_trimmingadapters_fastp/${sampleID}_trimmed_R1.fastq.gz \
+#	-2 $project_dir/outputs/a03_trimmingadapters_fastp/${sampleID}_trimmed_R2.fastq.gz 
+#	-P 24 \
+#	-o $project_id/outputs/b10_abun_salmon/${sampleID} \
+#	-b 200 \
+
+
+module purge
+
+echo -e "\n========== Sbatch log ==========\n"
+echo -e "\n Current directory: `pwd` \n"
+echo -e "\n `sacct -u broder49 -j $SLURM_JOB_ID --format=JobID,JobName,Start,End,Elapsed,NCPUS,ReqMem` \n"
+scontrol show job $SLURM_JOB_ID

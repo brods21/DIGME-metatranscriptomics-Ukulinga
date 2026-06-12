@@ -1,0 +1,55 @@
+#!/bin/bash -login
+
+#SBATCH --time=35:59:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=32
+#SBATCH --account shade-cole-bonito
+#SBATCH --mem=350G
+#SBATCH --array=1-34
+#SBATCH --job-name removerrna_ribodetector
+#SBATCH --output=slurm-%A_%a_removerrna_ribodetector.out 
+
+cd ${SLURM_SUBMIT_DIR}
+cores="$SLURM_CPUS_PER_TASK"
+RAM="$SLURM_MEM_PER_NODE"
+
+echo -e "\n========== Project paths ==========\n"
+
+echo -e "metaGAAP v. 1.0 - metaGenome Assembly and Annotation Pipeline
+MIT LICENSE - Copyright © 2022 Benucci Jones Broderick
+email: benucci[at]msu[dot]edu\n"
+
+source ../config.yaml
+
+echo -e "\n I am running: removerrna_ribodetector.sb \n"
+
+echo -e "\n========== Sub-directories ==========\n"
+
+echo "mkdir $project_dir/outputs/ribodetector/"; mkdir $project_dir/outputs/ribodetector/
+
+echo -e "\n========== Creating the array list ==========\n"
+
+sampleID=$(awk -v ArrayTaskID=$SLURM_ARRAY_TASK_ID '$1==ArrayTaskID {print $2}' $project_dir/array/sampleID.array)
+
+echo -e "\n========== rRNA removal: $sampleID ==========\n"
+conda activate ribodetector
+
+echo -e "ribodetector Version: `ribodetector --version`"
+
+ribodetector_cpu -t 1 \
+	-l 100 \
+	-i $project_dir/outputs/a03_trimmingadapters_fastp/${sampleID}_trimmed_R1.fastq.gz  $project_dir/outputs/a03_trimmingadapters_fastp/${sampleID}_trimmed_R2.fastq.gz \
+	-e rrna \
+	-o $project_dir/outputs/ribodetector/${sampleID}_norRNA_R1.fastq.gz $project_dir/outputs/ribodetector/${sampleID}_norRNA_R2.fastq.gz 
+
+conda deactivate
+
+# l for mean read length..... what should this be? maybe 150... minus contam/low seq
+# 20 cpu cores... but for slurm it says to set to 1.
+# the -e parameter is what to do with paired ends when class. differs. with rrna means, only rrn if both say so.
+
+echo -e "\n========== Sbatch log ==========\n"
+echo -e "\n Current directory: `pwd` \n"
+echo -e "\n `sacct -u broder49 -j $SLURM_JOB_ID --format=JobID,JobName,Start,End,Elapsed,NCPUS,ReqMem` \n"
+scontrol show job $SLURM_JOB_ID 

@@ -1,0 +1,55 @@
+#!/bin/bash -login
+
+#SBATCH --time=24:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=32G
+#SBATCH --account colej
+#SBATCH --job-name b04mapcont
+#SBATCH --array=1-14
+#SBATCH -o slurm-%A_%a_bbmap.out
+
+cd ${SLURM_SUBMIT_DIR}
+cores="$SLURM_CPUS_PER_TASK"
+RAM="$SLURM_MEM_PER_NODE"
+
+echo -e "\n========== Project paths ==========\n"
+source ../config.yaml
+
+echo -e "\n I am running: b04_mapReadtoContigs-bbmap.sb \n"
+
+echo -e "\n========== Sub-directories ==========\n"
+echo "mkdir -p $project_dir/outputs/b04_mapReadstoContigs_bbmap/"; mkdir -p $project_dir/outputs/b04_mapReadstoContigs_bbmap/
+
+echo -e "\n========== Genrate array list ==========\n"
+
+sampleID=$(awk -v ArrayTaskID=$SLURM_ARRAY_TASK_ID '$1==ArrayTaskID {print $2}' $project_dir/array/sampleID.array)
+
+mkdir $project_dir/outputs/b04_mapReadstoContigs_bbmap/${sampleID}
+
+echo -e "\n========== bbmap indexing contig for file: $sampleID ==========\n"
+conda activate bbtools
+
+bbmap.sh \
+	ref=$project_dir/outputs/b02_assembly_spades/${sampleID}/transcripts.fasta \
+	path=$project_dir/outputs/b04_mapReadstoContigs_bbmap/${sampleID}/ \
+	threads=$cores
+
+echo -e "\n========== bbmap indexing contig files ==========\n"
+
+bbmap.sh \
+	in=$project_dir/outputs/a03_trimmingadapters_fastp/${sampleID}_trimmed_R1.fastq.gz \
+	in2=$project_dir/outputs/a03_trimmingadapters_fastp/${sampleID}_trimmed_R2.fastq.gz \
+	covstats=/$project_dir/outputs/b04_mapReadstoContigs_bbmap/${sampleID}_cov.txt \
+	path=$project_dir/outputs/b04_mapReadstoContigs_bbmap/${sampleID}/ \
+	threads=$cores \
+	fast=t
+
+conda deactivate
+
+echo -e "\n========== Sbatch log ==========\n"
+echo -e "\n Current directory: `pwd` \n"
+echo -e "\n `sacct -u broder49 -j $SLURM_JOB_ID --format=JobID,JobName,Start,End,Elapsed,NCPUS,ReqMem` \n"
+scontrol show job $SLURM_JOB_ID
+

@@ -1,0 +1,47 @@
+#!/bin/bash -login
+
+#SBATCH --time=23:59:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=32
+#SBATCH --mem=360G
+#SBATCH --account shade-cole-bonito
+#SBATCH --job-name b10_DNAderepGenes_dedupe
+#SBATCH -o slurm-%A_%a_drerpGenes_dedupe.out
+
+cd ${SLURM_SUBMIT_DIR}
+cores="$SLURM_CPUS_PER_TASK"
+RAM="$SLURM_MEM_PER_NODE"
+
+source ../config.yaml
+
+echo -e "\n Running script: b10_derepGenes_dedupe.sb \n"
+
+echo -e "\n========== Sub-directories ==========\n"
+echo -e "mkdir -p $project_dir/outputs/b10_derepGenes_dedupe"; mkdir -p $project_dir/outputs/b10_derepGenes_dedupe/
+
+
+echo -e "\n========== dedupe genes $Contigs with dedupe ==========\n"
+
+
+conda activate bbtools
+
+export _JAVA_OPTIONS=-Xmx900G
+
+dedupe.sh \
+	in=$project_dir/outputs/b07_predictproteinregions_transdecoder/all.transcripts.fasta.transdecoder.cds \
+	out=$project_dir/outputs/b07_predictproteinregions_transdecoder/all.deduped.transdecoder.cds\
+	cluster=t  \
+	minidentity=95 \
+	overwrite=t
+
+# these parametes are from (https://doi.org/10.1038/s41396-018-0158-1) paper in ISME 2018
+
+#clusters GENES based on a 98% similarity score and outputs a new fasta file with reduced redundancy
+	# not sure what the cutoff should be !!!
+conda deactivate
+
+echo -e "\n========== Sbatch log ==========\n"
+echo -e "\n Current directory: `pwd` \n"
+echo -e "\n `sacct -u broder49 -j $SLURM_JOB_ID --format=JobID,JobName,Start,End,Elapsed,NCPUS,ReqMem` \n"
+scontrol show job $SLURM_JOB_ID

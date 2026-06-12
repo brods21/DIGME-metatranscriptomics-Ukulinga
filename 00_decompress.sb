@@ -1,0 +1,59 @@
+#!/bin/bash -login
+
+#SBATCH --time=23:59:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem-per-cpu=8G
+#SBATCH --job-name 0gzip
+
+cd ${SLURM_SUBMIT_DIR}
+cores=$SLURM_CPUS_PER_TASK
+RAM_NODE=$SLURM_MEM_PER_NODE
+
+echo -e "metaGAAP v. 1.0 - metaGenome Assembly and Annotation Pipeline
+MIT LICENSE - Copyright © 2022 Benucci Jones Broderick
+email: benucci[at]msu[dot]edu\n"
+
+source config.yaml
+
+echo -e "\n Running script: 00_decompressFiles.sb \n"
+
+echo -e "\n========== Generating project sub-directories ==========\n"
+echo -e "
+mkdir $project_dir/outputs/\n
+mkdir $project_dir/slurms/\n
+mkdir $project_dir/testing/\n
+\n"
+
+mkdir $project_dir/outputs/
+mkdir $project_dir/slurms/
+mkdir $project_dir/testing/
+
+
+echo -e "\n========== Decompress files ==========\n"
+for file in *.fastq*
+do
+	if [[ $file == *.fastq.bz2 ]]
+	then echo -e "\n========== ${file} fastq.bz2 uncompressing... ==========\n"
+	bzip2 -cd < $file > ${file//.bz2/}
+		elif [[ $file == *.fastq.gz ]]
+	then echo -e "\n========== ${file} fastq.gz uncompressing... ==========\n"
+	gzip -cd < $file > ${file//.gz/}
+		elif [[ $file == *.fastq.tar.gz ]]
+	then echo -e "\n========== ${file} fastq.tar.gz uncompressing... ==========\n"
+	tar -czxvf < $file > ${file//.tar.gz/}
+		elif [[ $file == *.fastq ]]
+	then echo -e "\n========== ${file} reads are in FASTQ format, nothing to do! ====================\n"
+		else echo -e "\n========== ${file} format non supported, this will not end up well... ==========\n"
+	fi
+done
+
+echo -e "\n========== List of sequences per file ==========\n"
+for i in $(find $project_dir/RNA_rawdata/20240223_RNASeq_PE150/ -type f -name "*.fastq"); do echo "$i : `echo $(cat ${i} | wc -l)/4 | bc`"; done
+
+echo -e "\n========== Sbatch log ==========\n"
+echo -e "\n Current directory: `pwd` \n"
+echo -e "\n `sacct -u $MSUusername -j $SLURM_JOB_ID --format=JobID,JobName,Start,End,Elapsed,NCPUS,ReqMem` \n"
+scontrol show job $SLURM_JOB_ID
+mv $project_dir/mycode/slurm-$SLURM_JOB_ID* $project_dir/slurms/00_decompressfiles.slurm
