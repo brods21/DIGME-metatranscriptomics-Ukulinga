@@ -1,4 +1,4 @@
-
+ 
 # 1/27/2025
 # eggnog transdecoder but with salmon 
   # Using ADJUSTED KO AND CAZY counts: divided count by # assignments the eggnog algo gave it
@@ -47,9 +47,8 @@ ko_counts_init$CoreUniqueID <- gsub(pattern = "_S[0-9].*", replacement = "", ko_
 #cazy_counts_init$CoreUniqueID <- gsub(pattern = "_S[0-9].*", replacement = "", cazy_counts_init$SampleID)
 total_eggnog_annotations$CoreUniqueID <- gsub(pattern = "_S[0-9].*", replacement = "", total_eggnog_annotations$SampleID)
 
-# bring in updated metadata from Luciana 1-16-25
-meta <- read.csv("L0/DIGME_data_global.csv") # noteL C02_eq is measurements 2-4
-meta_new = meta %>% filter(SiteCode == "ukulingadrt.za")  # keep only ukulinga/\
+# READ IN METADATA
+meta  = read.csv ("L0/metadata.csv" )
 
 # merge with meta
 ko_counts_init2 =merge(ko_counts_init,meta_new,by= "CoreUniqueID")
@@ -92,7 +91,6 @@ plot(ko_counts$relabun_eggnog,ko_counts$TPM)
 #plot(cazy_counts$relabun_cazy, cazy_counts$relabun_eggnog) # interesting, far less close. 
 #plot(cazy_counts$relabun_cazy, cazy_counts$TPM) # MUCH less close!!!!! how come. 
 
-ko_counts$logWP <- -log10(ko_counts$ActualWP)
 #cazy_counts$logWP <- -log(cazy_counts$ActualWP)
 ############################################################
 # Site x species to do deseq normalization. 
