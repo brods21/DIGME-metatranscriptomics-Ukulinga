@@ -79,8 +79,8 @@ setwd("/Users/caitlinbroderick/Documents/DIGME/metatranscriptomics")
 counts_init <- read.csv("L1/deseq_normalized_counts_072125.csv")
 length(unique(counts_init$KO)) # this should be 12295
 
-# bring in metadata. 
-meta_init <- read_excel("/Users/caitlinbroderick/Downloads/DIGME_CoreResp_gSOC.xlsx",2) 
+# READ IN METADATA
+meta_new  = read.csv ("L0/metadata.csv" )
 
 # raw read counts per sample
 readcount_raw <- read.table("L0/raw_rna_counts.txt", header = TRUE)
@@ -88,9 +88,7 @@ readcount_raw$Sample = gsub("_R.*", "", readcount_raw$sampleFR)
 write.csv (readcount_raw , "ReadCounts_For_NCBI.csv", row.names = F)
 readcount_raw_sum = readcount_raw %>% group_by (Sample) %>% summarize (totalreads = sum (reads))
 
-# new covariates. 
-cov <- read_excel("/Users/caitlinbroderick/Downloads/DIGME_covariates.xlsx",1) 
-mbc = cov %>% select(c(CoreUniqueID, MBC))
+
 
 ```
 
@@ -117,34 +115,9 @@ readcount_raw_sum %>% summarize (mean_reads = mean (totalreads),
                                  min_reads = min(totalreads) ) %>%  round ()%>% t()%>%  knitr::kable(caption = "Sequencing read statistics" )
 ```
 
-## column management 
+## Metadata and column management 
 
 ```{r}
-
-meta_init$ActualWP = as.numeric(meta_init$ActualWP)
-meta_init$ActualGWC = as.numeric(meta_init$ActualGWC)
-#meta_init$ActualWP_MPa =   meta_init$ActualWP / 10
-meta_init$`CO2 ug SOCg-1 h-1` = as.numeric(meta_init$`CO2 ug SOCg-1 h-1`)
-
-meta_wmbc = merge(meta_init[,-1] , mbc, by = "CoreUniqueID")  # combine meta and mbc
-
-# prpoer meta file
-meta  = meta_wmbc %>% select(CoreUniqueID, SiteCode,RainTrt,FieldRep, TargetGWC, TargetWP,ActualGWC, ActualWP, MBC, `CO2 ug SOCg-1 h-1`) %>% 
-  group_by(CoreUniqueID, SiteCode,RainTrt,FieldRep, TargetGWC, TargetWP,ActualGWC,ActualWP, MBC) %>% 
-  summarize(CO2_eq = mean(`CO2 ug SOCg-1 h-1`, na.rm=T) ) # micrograms SOC per 
-
-meta$logWP <- -log10(meta$ActualWP ) # log of WP, bars. 
-meta$plot <- paste(meta$RainTrt, meta$FieldRep, sep = ".") # add column for plot 
-
-# add coreuique id column for joining
-counts_init$CoreUniqueID <- gsub(pattern = "_S[0-9].*", replacement = "", counts_init$SampleID)
-
-# add qC02 column to meta
-meta$qCO2 = meta$CO2_eq / meta$MBC
-
-# subset just ukulinga. 
-meta_new <- meta %>% filter(SiteCode == "ukulingadrt.za") 
-quantile(meta_new$ActualWP, na.rm=T)
 
 plot (meta_new $TargetGWC, meta_new$ActualGWC)
 
@@ -171,10 +144,6 @@ meta_new %>% ggplot (aes (x = logWP, y = RainTrt, fill = RainTrt)) +
    scale_y_discrete(expand = c(0, 0) , limits=rev) 
 
 
-meta_new$WP_categorical <- case_when(-meta_new$ActualWP>-15 ~ "wet",
-                             -meta_new$ActualWP< -15 ~ "dry")
-
-write.csv (meta_new, "Ukulinga_Metadata_full.csv", row.names = F)
 ```
 # co2 flux with water potential in A and D
 ## look at co2 flux curves
