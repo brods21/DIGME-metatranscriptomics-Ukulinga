@@ -1,0 +1,1454 @@
+---
+title: "DIGME metatranscriptomics analysis"
+date: "2025-08-04"
+output: 
+  html_document:
+    theme: flatly
+    toc: yes
+    toc_float: 
+      collapsed: false
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+
+
+
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+# setup 
+## load packages 
+```{r , results = "hide"}
+rm(list=ls())
+
+library(tidyverse) # not working right now. 
+library(readr)
+library(pheatmap) #
+library(emmeans)
+library(vegan)
+library(ggnewscale)
+library(mvabund)
+library(broom)
+library(lme4)
+library(bbmle)
+library(ggpubr)
+library(performance)
+library(see)
+library(lmerTest)
+library(MuMIn)
+library(ggeffects)
+library(readxl)
+library(EnhancedVolcano)
+library(pals)
+library(svglite)
+library(emojifont)
+library(showtext)
+library(ggthemes)
+library(GGally)
+library(ggordiplots)
+
+```
+
+## bring in custom or modified functions
+```{r , results = "hide"}
+
+source("/Users/caitlinbroderick/Documents/DIGME/metatranscriptomics/DIGME_RNA_functionsModified.R")
+source("/Users/caitlinbroderick/Documents/DIGME/metatranscriptomics/ggordisurf_mod.R")
+
+# Get the current date
+current_date <- Sys.Date()
+
+
+```
+
+
+## bring in data 
+
+```{r,include = F}
+setwd("/Users/caitlinbroderick/Documents/DIGME/metatranscriptomics") 
+
+# normalized, un-filtered counts 
+counts_init <- read.csv("L1/deseq_normalized_counts_072125.csv")
+length(unique(counts_init$KO)) # this should be 12295
+
+# bring in metadata. 
+meta_init <- read_excel("/Users/caitlinbroderick/Downloads/DIGME_CoreResp_gSOC.xlsx",2) 
+
+# raw read counts per sample
+readcount_raw <- read.table("L0/raw_rna_counts.txt", header = TRUE)
+readcount_raw$Sample = gsub("_R.*", "", readcount_raw$sampleFR) 
+write.csv (readcount_raw , "ReadCounts_For_NCBI.csv", row.names = F)
+readcount_raw_sum = readcount_raw %>% group_by (Sample) %>% summarize (totalreads = sum (reads))
+
+# new covariates. 
+cov <- read_excel("/Users/caitlinbroderick/Downloads/DIGME_covariates.xlsx",1) 
+mbc = cov %>% select(c(CoreUniqueID, MBC))
+
+```
+
+## bring in extra files 
+
+```{r}
+#bring in extra files- all kegg pathway, level 2, KOdescriptions. etc. 
+ko_level2_init  <- read.csv("L1/Extra files for analysis/ko_path_level2.csv")
+ko_desc <- read.csv("L1/Extra files for analysis/ko_descriptions.csv")
+pathway_to_ko_init <- read.csv("L1/Extra files for analysis/KEGG KO to pathway.csv")
+pathway_to_ko<- pathway_to_ko_init %>% filter(!str_detect(Pathway, "ko"))
+pathways_desc <- read.csv("L1/Extra files for analysis/kegg pathways.csv")
+
+# sporulation genes. 
+spor = read.csv("L1/Extra files for analysis/Li2022SporulationGenes.csv")
+```
+
+
+## read stats for paper
+
+```{r}
+readcount_raw_sum %>% summarize (mean_reads = mean (totalreads),
+                                 max_reads = max (totalreads),
+                                 min_reads = min(totalreads) ) %>%  round ()%>% t()%>%  knitr::kable(caption = "Sequencing read statistics" )
+```
+
+## column management 
+
+```{r}
+
+meta_init$ActualWP = as.numeric(meta_init$ActualWP)
+meta_init$ActualGWC = as.numeric(meta_init$ActualGWC)
+#meta_init$ActualWP_MPa =   meta_init$ActualWP / 10
+meta_init$`CO2 ug SOCg-1 h-1` = as.numeric(meta_init$`CO2 ug SOCg-1 h-1`)
+
+meta_wmbc = merge(meta_init[,-1] , mbc, by = "CoreUniqueID")  # combine meta and mbc
+
+# prpoer meta file
+meta  = meta_wmbc %>% select(CoreUniqueID, SiteCode,RainTrt,FieldRep, TargetGWC, TargetWP,ActualGWC, ActualWP, MBC, `CO2 ug SOCg-1 h-1`) %>% 
+  group_by(CoreUniqueID, SiteCode,RainTrt,FieldRep, TargetGWC, TargetWP,ActualGWC,ActualWP, MBC) %>% 
+  summarize(CO2_eq = mean(`CO2 ug SOCg-1 h-1`, na.rm=T) ) # micrograms SOC per 
+
+meta$logWP <- -log10(meta$ActualWP ) # log of WP, bars. 
+meta$plot <- paste(meta$RainTrt, meta$FieldRep, sep = ".") # add column for plot 
+
+# add coreuique id column for joining
+counts_init$CoreUniqueID <- gsub(pattern = "_S[0-9].*", replacement = "", counts_init$SampleID)
+
+# add qC02 column to meta
+meta$qCO2 = meta$CO2_eq / meta$MBC
+
+# subset just ukulinga. 
+meta_new <- meta %>% filter(SiteCode == "ukulingadrt.za") 
+quantile(meta_new$ActualWP, na.rm=T)
+
+plot (meta_new $TargetGWC, meta_new$ActualGWC)
+
+hist(meta_new$ActualWP)
+
+library(ggridges)
+meta_new %>% ggplot (aes (x = ActualWP, y = RainTrt, fill = RainTrt)) +
+  scale_fill_manual(values = c( "#3281fb",  "#fb9900")) +
+  geom_density_ridges(
+    jittered_points = TRUE ,alpha = 0.5, scale = 1) + 
+  theme_bw(base_size = 16) +
+  scale_x_continuous(expand = c(0, 0)) +
+  ylab(NULL) +
+   scale_y_discrete(expand = c(0, 0) , limits=rev) 
+
+
+meta_new %>% ggplot (aes (x = logWP, y = RainTrt, fill = RainTrt)) +
+  scale_fill_manual(values = c( "#3281fb",  "#fb9900")) +
+  geom_density_ridges(
+    jittered_points = TRUE ,alpha = 0.5, scale = 1) + 
+  theme_bw(base_size = 16) +
+  scale_x_continuous(expand = c(0, 0)) +
+  ylab(NULL) +
+   scale_y_discrete(expand = c(0, 0) , limits=rev) 
+
+
+meta_new$WP_categorical <- case_when(-meta_new$ActualWP>-15 ~ "wet",
+                             -meta_new$ActualWP< -15 ~ "dry")
+
+write.csv (meta_new, "Ukulinga_Metadata_full.csv", row.names = F)
+```
+# co2 flux with water potential in A and D
+## look at co2 flux curves
+```{r}
+meta_new$graphlab = dplyr::recode(meta_new$RainTrt, Ambient="(a)" , Drought = "(b)")
+co2_fig = meta_new %>% ggplot(aes(x=ActualWP, y=CO2_eq)) +  # much better
+  geom_vline(xintercept = 15, linetype = "dashed", color = "pink") +
+  geom_smooth(method = "lm") +
+  geom_point(aes (color = WP_categorical, shape = RainTrt), fill = "white", size = 2, stroke=1.25 ) +
+  #geom_vline(xintercept = 0.5, linetype = "dashed", color = "green") +
+  coord_cartesian(ylim = c(0, 300), 
+                  clip = 'off') +
+  geom_text (aes (x = 500, y = 300, label = paste (graphlab, RainTrt, sep = " ")) ,hjust=0)  +
+  scale_x_continuous(trans = ggforce::trans_reverser('log10'), labels = label_trueminus) +
+  scale_color_manual(values = c ("#B2432FFF", "#3A6589FF") , name = "WP") +
+  scale_shape_manual(values = c(16,24), name = "Trt") +
+  theme_clean_mod() +
+  annotate (geom = "text", label = "Dry", x = 50, y = 5, vjust=0, color = "#B2432FFF") +
+  annotate (geom = "text", label = "Wet", x = 2, y = 5,vjust=0,  color = "#3A6589FF") +
+  theme(
+    strip.text.x = element_text(color = "white" )  ,
+    legend.background = element_rect(fill = "transparent", colour = NA),
+    legend.position = c(.2, .9),
+    legend.justification = c("right", "top"),
+    legend.box.just = "left", 
+    legend.text = element_text(size = 8, face = "italic"),
+    legend.title = element_text(size = 9, face = "italic")) +
+  labs(
+         colour = "WP",
+         shape = "Trt"
+        ) +
+  
+  xlab( "Water potential (bars)")  +
+  scale_y_continuous( expression(CO["2"]~flux ~ (mu~g/ gC / h))) +
+  facet_grid(~RainTrt)
+
+
+showtext_auto()
+showtext_opts(dpi = 300)
+
+co2_fig
+
+# Create the filename with the date
+fig1Name <- paste0("Figures/Figure_1_", current_date, ".png")
+
+ggsave (fig1Name, co2_fig ,  width =7, height = 4, unit = "in", dpi = 300)
+
+#
+# Save as SVG
+ggsave("Figures/Figure_1.svg", plot = co2_fig, width =7, height = 4, dpi = 300)
+
+```
+## average co2 flux per category
+
+```{r}
+meta_new %>% group_by(WP_categorical) %>% summarize (`CO2 flux (mean)` =mean (CO2_eq), `CO2 flux (SD)` = sd (CO2_eq) )%>%    knitr::kable(  digits = 2, caption = "CO2 flux per category"  )
+```
+## for supplemental - look at MBC and qCO2 (biomass-corrected CO2 flux) in ambient nad drought as a function of WP
+```{r, fig.width = 4, fig.height = 6, warnings = F}
+# look at MBC = supplemental
+mbc_fig =meta_new %>% ggplot(aes(x=ActualWP, y=MBC)) +  # clear trends ?
+  geom_point() + #geom_smooth() +
+  scale_x_continuous(trans = ggforce::trans_reverser('log10'), labels = label_trueminus) +
+  xlab(bquote(~Log[10] ~ "Water potential (bars)")  )+
+  theme_clean_mod() +
+  ylab ("Microbial biomass C") +
+  facet_grid(~RainTrt) # there we go., 
+
+# look at qCO2
+qCO2_fig =meta_new %>% ggplot(aes(x=ActualWP, y=qCO2)) +  # HMMMMM, ,,,,
+  geom_point() + geom_smooth(method = "lm") +
+   scale_x_continuous(trans = ggforce::trans_reverser('log10'), labels = label_trueminus) +
+  theme_clean_mod() +
+  xlab(bquote(~Log[10] ~ "Water potential (bars)")  )+
+  ylab ("qCO2") +
+  facet_grid(~RainTrt) # there we go., 
+
+
+# look at CO2
+MBC_CO2 = meta_new %>% ggplot(aes(y=CO2_eq, x=MBC)) +  # HMMMMM, ,,,,
+  geom_point() + geom_smooth(method = "lm") +
+  theme_clean_mod() +
+  xlab("MBC" )+
+  ylab ("CO2 flux") +
+  facet_grid(~RainTrt) # there we go., 
+mbc_co2_fig = ggarrange (mbc_fig, qCO2_fig  ,MBC_CO2, nrow=3 , labels = c ("(a)", "(b)", "(c)"), font.label = list (size = 8))
+
+
+# Create the filename with the date
+figS1Name <- paste0("Figures/Supplementary_Figure_1_", current_date, ".png")
+
+ggsave (figS1Name, mbc_co2_fig ,  width =4, height = 7, unit = "in", dpi = 300)
+ 
+
+
+
+```
+### models for CO2 flux
+
+```{r}
+mod_forflux = lmer(CO2_eq~poly(logWP,2)*RainTrt + (1|plot), data =meta_new)
+summary(mod_forflux) # this says the linear is fine, no quad, nointeraction....
+
+mod_forflux_cat = lmer(CO2_eq~WP_categorical*RainTrt + (1|plot), data =meta_new)  # using category
+summary(mod_forflux_cat)
+pairs(emmeans(mod_forflux_cat, pairwise~RainTrt|WP_categorical , infer=T))
+pairs(emmeans(mod_forflux_cat, pairwise~WP_categorical|RainTrt , infer=T)) # again - WP, not treatment
+
+ 
+mod_forflux_lin = lmer(CO2_eq~logWP*RainTrt + (1|plot), data =meta_new) # linear only model
+summary(mod_forflux_lin ) # this says the linear is fine, no trt, no interaction....
+r.squaredGLMM(mod_forflux_lin) 
+
+mod_formbc = lmer(MBC~poly(logWP,2)*RainTrt + (1|plot), data =meta_new) 
+summary(mod_formbc ) # no trend. 
+r.squaredGLMM(mod_formbc) 
+
+mod_forqco2 = lmer(qCO2~poly(logWP,2)*RainTrt + (1|plot), data =meta_new)
+summary(mod_forqco2 ) # this says the linear is fine, no interaction....
+r.squaredGLMM(mod_forflux) 
+
+mod_forqco2_lin = lmer(qCO2~logWP*RainTrt + (1|plot), data =meta_new)
+summary(mod_forqco2_lin ) # this says the linear is fine, no interaction....
+r.squaredGLMM(mod_forqco2_lin) 
+
+
+# does MBC affect co2 flux
+mod_MBC_CO2_andwp = lmer(CO2_eq~MBC*poly(logWP,2)*RainTrt + (1|plot), data =meta_new) 
+summary(mod_MBC_CO2_andwp ) # no trend with MBC
+
+
+# does MBC affect co2 flux
+mod_MBC_CO2 = lmer(CO2_eq~MBC*RainTrt + (1|plot), data =meta_new) 
+summary(mod_MBC_CO2 ) # no trend with MBC
+r.squaredGLMM(mod_formbc) 
+
+# summary(cut(meta_new$CO2_eq, 2, include.lowest = TRUE) )
+#   # [34.8,159]  (159,283] 
+#     #      26         10 
+# 
+# summary(cut(meta_new$ActualWP, 2, include.lowest = TRUE) )
+# 
+#  summary(cut(meta_new$logWP, 2, include.lowest = TRUE) )
+#  #[-2.83,-1.34] (-1.34,0.149] 
+#     #       12            24 
+#  
+#  
+#  
+# km = kmeans (meta_new %>% ungroup %>%  select (CO2_eq) ,2)
+# table (km$cluster )
+
+meta_new %>% ggplot(aes(x=ActualWP, y=CO2_eq)) +  # much better
+  geom_vline(xintercept = 339, linetype = "dashed", color = "pink") +
+  geom_hline(yintercept = 159, linetype = "dashed", color = "pink") +
+  geom_smooth(method = "lm") +
+  geom_point(aes (color = WP_categorical, shape = RainTrt), fill = "white", size = 2, stroke=1.25 ) +
+  #geom_vline(xintercept = 0.5, linetype = "dashed", color = "green") +
+  coord_cartesian(ylim = c(0, 300), 
+                  clip = 'off') +
+  geom_text (aes (x = 500, y = 300, label = paste (graphlab, RainTrt, sep = " ")) ,hjust=0)  +
+  scale_x_continuous(trans = ggforce::trans_reverser('log10'), labels = label_trueminus) +
+  scale_color_manual(values = c ("#B2432FFF", "#3A6589FF") , name = "WP") +
+  scale_shape_manual(values = c(16,24), name = "Trt") +
+  theme_clean_mod() +
+  annotate (geom = "text", label = "Dry", x = 50, y = 5, vjust=0, color = "#B2432FFF") +
+  annotate (geom = "text", label = "Wet", x = 2, y = 5,vjust=0,  color = "#3A6589FF") +
+  theme(
+    strip.text.x = element_text(color = "white" )  ,
+    legend.background = element_rect(fill = "transparent", colour = NA),
+    legend.position = c(.2, .9),
+    legend.justification = c("right", "top"),
+    legend.box.just = "left", 
+    legend.text = element_text(size = 8, face = "italic"),
+    legend.title = element_text(size = 9, face = "italic")) +
+  labs(
+         colour = "WP",
+         shape = "Trt"
+        ) +
+  
+  xlab(bquote(~Log[10] ~ "Water potential (bars)")  )+
+  scale_y_continuous( expression(CO["2"]~flux ~ (mu~g/ gC / h))) +
+  facet_grid(~RainTrt)
+
+
+```
+# Set up analyses for transcript abundance
+## merge files 
+
+```{r}
+counts = merge (counts_init, meta_new, by = "CoreUniqueID")
+setdiff( meta_new$CoreUniqueID, unique (gsub ( "_S.*", "" , counts_init$CoreUniqueID) ) )
+# playing around -counts correlated with WP?
+counts_total_eachwp = counts %>% group_by(ActualWP) %>% summarize(sum = sum(deseq_counts)) 
+plot(counts_total_eachwp$ActualWP, counts_total_eachwp$sum) # hmmm
+plot(-log(counts_total_eachwp$ActualWP), counts_total_eachwp$sum) # better
+cor.test(-log(counts_total_eachwp$ActualWP), counts_total_eachwp$sum) # good. 
+
+# get rid groups we dont care about! Human related
+# RIGHT NOW ALSO TAKINGOUT global and overview maps!!!! too broad to be useful...
+ko_level2 <-  ko_level2_init  %>%  filter ( Level.1 != "Human Diseases"  &
+                                              Level.1 != "Drug Development" &
+                                              Level.2 != "Global and overview maps" &
+                                              Level.2 != "Immune system" &
+                                              Level.2 != "Information processing in viruses" &
+                                              Level.2 != "Infectious disease: viral" &
+                                              Level.2 != "Circulatory system" &
+                                              Level.2 != "Endocrine system" &
+                                              Level.2 != "Digestive system" &
+                                              Level.2 != "Excretory system")
+
+ko_level2$Level.2 = dplyr::recode (ko_level2$Level.2, "Cellular community - prokaryotes" = "Biofilm production")
+
+length(unique(ko_level2$Level.2))
+spor2 = as.data.frame(spor$KO)
+names(spor2)[1] = "KO"
+spor2$Level.2 = "Sporulation"
+ko_level2_wspore = rbind((ko_level2 %>% select(KO,Level.2)), spor2)
+
+#sporgrep = ko_desc %>% filter(grepl("porulation",ko_description) )
+
+# merge KO counts with LEVEL 2 assignments
+ko_counts_lev2 = merge(counts, ko_level2_wspore, by = "KO")
+
+
+# finally, count up relative abundance for each level 2 within each sample
+# ..... do we want to do relative abundance???? consider just using sum. 
+totalcounts_wlevel2 = ko_counts_lev2 %>% group_by(SampleID,RainTrt, plot,logWP,ActualWP,  WP_categorical,MBC,qCO2,CO2_eq) %>% summarize(totalLev2Counts = sum(deseq_counts))
+
+lev2_sums_init = ko_counts_lev2 %>% group_by(SampleID,Level.2) %>% summarize(Lev2Count = sum(deseq_counts))
+
+lev2_sums = merge(lev2_sums_init, totalcounts_wlevel2 )
+lev2_sums$relabun = lev2_sums$Lev2Count / lev2_sums$totalLev2Counts * 100
+
+plot(lev2_sums$Lev2Count, lev2_sums$relabun) # okay so pretty damn close
+cor.test(lev2_sums$Lev2Count, lev2_sums$relabun) # 99 percent correlation. 
+
+```
+
+## correlation to remove extremely highly correlated categories - redundant?
+
+```{r}
+Lev2 = unique(lev2_sums$Level.2)
+
+lev2_sums_wide <- lev2_sums  %>% 
+  dplyr::select (c(SampleID, RainTrt, logWP, ActualWP, WP_categorical,CO2_eq, qCO2, Level.2, Lev2Count)) %>% 
+  pivot_wider(names_from = "Level.2", values_from = "Lev2Count", values_fill = 0)
+
+lev2_sums_sitexsp = lev2_sums_wide %>% select(all_of(Lev2)) %>% as.matrix()
+rownames(lev2_sums_sitexsp) = lev2_sums_wide$SampleID
+lev2_sums_wide_meta = lev2_sums_wide %>% select(!all_of(Lev2))
+
+# look at correlation plot between the functions !!!!
+res <- cor(lev2_sums_sitexsp)
+
+res[!lower.tri(res)] <- 0
+max(res)  # 0.9882873 !!
+res[abs(res)>0.95] #0.9702878 0.9531871 0.9882873
+res[abs(res)>0.9] # more. 
+
+lev2_sums_sitexsp_nocor <- 
+  lev2_sums_sitexsp[, !apply(res, 2, function(x) any(abs(x) > 0.95, na.rm = TRUE))]
+dim(lev2_sums_sitexsp)
+dim(lev2_sums_sitexsp_nocor) # this takes out three
+colnames(lev2_sums_sitexsp)
+colnames(lev2_sums_sitexsp_nocor) # no aging,  no chromosome , these are good ones to get rid of 
+setdiff(colnames(lev2_sums_sitexsp), colnames(lev2_sums_sitexsp_nocor))
+
+# make long that also has no cor. 
+lev2_sums_nocor = lev2_sums %>% filter(Level.2 %in%  colnames(lev2_sums_sitexsp_nocor))
+dim(lev2_sums)
+dim(lev2_sums_nocor)
+length(unique(lev2_sums$Level.2))
+length(unique(lev2_sums_nocor$Level.2))
+
+#GGally::ggpairs(lev2_sums_sitexsp_nocor) +theme_bw()
+```
+## create a site x species matrix. species = KEGG KO geness
+```{r}
+
+goodmeta_names = c("SampleID","RainTrt","logWP","WP_categorical", "CO2_eq","qCO2", "plot")
+# do not limit only to ones with level 2
+sitexsp_wmeta <- counts %>% dplyr::select(c(SampleID,RainTrt,logWP,WP_categorical,CO2_eq,qCO2,plot,KO,deseq_counts)) %>% 
+  pivot_wider(names_from=KO, values_from = deseq_counts, values_fill = 0)
+
+ko_list = unique(counts$KO)
+
+sitexsp <- sitexsp_wmeta %>% select(all_of(ko_list))
+#column_to_rownames(sitexsp$SampleID)
+
+sitexsp_metadata <- sitexsp_wmeta %>% select(all_of(goodmeta_names))
+```
+
+# NMDS and permanova
+```{r}
+keep_genes = colSums (sitexsp!=0) > 3
+table( keep_genes) # this is correct. 
+
+length(names(keep_genes[keep_genes==TRUE]))
+keep_genes_true = names(keep_genes[keep_genes==TRUE])
+sitexsp_abun <- sitexsp %>% dplyr::select(all_of(keep_genes_true))
+
+dim(sitexsp) # 12426, now 12295
+dim(sitexsp_abun) # 7593, 7469
+
+# here, toggle between using all genes and only sig genes from deseq
+sitexsp_hel <- decostand(sitexsp_abun, method = "hellinger")
+sitexsp_bray <- vegdist(sitexsp_hel, method = "bray")
+
+# actual test
+ko_perm <- adonis2(sitexsp_bray~sitexsp_metadata$logWP*sitexsp_metadata$RainTrt, permutations = 19999)
+ko_perm # logwp matter a lot
+cbind (ko_perm[1], ko_perm$R2)
+ko_perm$R2
+
+ko_perm_WP_categorical <- adonis2(sitexsp_bray~sitexsp_metadata$WP_categorical*sitexsp_metadata$RainTrt, permutations = 19999)
+ko_perm_WP_categorical # also sig as category
+
+# pairwise 
+ko_perm_WP_categorical_pairwise  = pairwiseAdonis::pairwise.adonis(sitexsp_bray, factors=paste(sitexsp_metadata$WP_categorical,sitexsp_metadata$RainTrt))
+
+# beta dispersion
+betadisper_WP_categorical = betadisper(sitexsp_bray, group=paste(sitexsp_metadata$WP_categorical,sitexsp_metadata$RainTrt) )
+anova(betadisper_WP_categorical) # N/S
+
+# NMDS!
+nmds= metaMDS(sitexsp_hel, distance = "bray", trymax = 100, wascores =TRUE)
+#nmds$species
+#sppscores(nmds) <- sitexsp_hel
+nmds$stress
+goodness(nmds)
+
+nmds_ggplot <- sitexsp_metadata
+nmds_ggplot$NMDS1 <- scores(nmds)$sites[,1]
+nmds_ggplot$NMDS2 <- scores(nmds)$sites[,2]
+```
+
+## nmds figure
+
+```{r, fig.height=5.25, fig.width=12.5}
+
+# big color palette 
+# get palette  for many different color s !!!
+# from https://stackoverflow.com/questions/9563711/r-color-palettes-for-many-data-classes 
+c23 <- c(
+  "dodgerblue2", "#E31A1C", # red
+  "green4",
+  "#6A3D9A", # purple
+  "#FF7F00", # orange
+  "black", 
+  "skyblue2", "#FB9A99", # lt pink
+  "palegreen2",
+  "#CAB2D6", # lt purple
+  "#FDBF6F", # lt orange
+  "gray70", 
+  "maroon", "orchid1", "deeppink1", "blue1", "steelblue4",
+  "darkturquoise", "green1", "yellow4", "yellow3",
+  "darkorange4", "brown"
+)
+
+# this is ordihull. 
+ggordiplot_nmds = gg_ordiplot(nmds, groups = paste (nmds_ggplot$RainTrt, nmds_ggplot$WP_categorical) ,
+                         hull = TRUE, ellipse=FALSE, plot=F) 
+
+
+
+# select species scores using ordiselect
+limited <- goeveg::ordiselect( goeveg::clean_matrix (sitexsp_hel ), 
+                               nmds, method = "axes", ablim = 0.2, fitlim = 0.25)
+
+nmdss.sp.scores = as.data.frame (nmds$species  )
+nmdss.sp.scores = rownames_to_column(nmdss.sp.scores, var = "KO")
+nmdss.sp.scores_wdesc = merge(nmdss.sp.scores, ko_desc, by = "KO")
+nmdss.sp.scores_wdesc$short = gsub("\\;.*", "", nmdss.sp.scores_wdesc$ko_description)
+
+nmdss.sp.scores2_lev2 = merge(nmdss.sp.scores_wdesc, ko_level2, by = "KO", all.x = T)
+
+# this is top 26 genes based on ordiselect! colored by level 2. 
+nmdss.sp.scores2_lev2_norepeats  = nmdss.sp.scores2_lev2 %>% group_by(KO) %>% top_n(n=1)
+dim(nmdss.sp.scores2_lev2)
+dim(nmdss.sp.scores2_lev2_norepeats )
+count_of_NMDS_Genes_highlight =nmdss.sp.scores2_lev2_norepeats %>% filter (KO %in% limited ) %>% group_by(Level.2) %>% count()
+
+
+ggordiplot_nmds_full = ggplot() + geom_point (data = ggordiplot_nmds$df_ord, aes(x=x,y=y,color =Group,shape=Group) ,size = 2.5,stroke=1.25)+ 
+  scale_color_manual( values= c ("#ce5b46", "#1f66e5","#752c1f","#93CCEA"))+
+  scale_shape_manual(values = c (19,19,24,24)) +
+  geom_polygon(data = ggordiplot_nmds$df_hull, aes (x= x, y = y, fill = Group), alpha = 0.3) +
+  scale_fill_manual( values= c ("#ce5b46", "#1f66e5","#752c1f","#93CCEA"))+
+  theme_clean_mod() + 
+  xlab("NMDS1") + ylab("NMDS2") +
+  ylim(-0.45 ,0.55) +
+  annotate("text", x = -0.05, y=-0.3, label = bquote ("WP:"~R^2~" = 0.09," ~italic(P) ~"< 0.001")  , color = "black",hjust=0, size = 4)  +
+  annotate("text", x = -0.05, y=-0.37, label = bquote ("Trt:"~R^2~" = 0.03," ~italic(P) ~"= 0.399")  , color = "black", hjust=0, size = 4)  +
+  annotate("text", x = -0.05, y=-0.44, label = bquote ("Int:"~R^2~" = 0.03," ~italic(P) ~"= 0.516")  , color = "black",hjust = 0, size = 4)  +
+  theme(legend.position = "inside", legend.position.inside = c(0.4,0.85), 
+        legend.background = element_rect(fill = NA))
+
+ggordiplot_nmds_wpoints = ggplot() + geom_point (data = ggordiplot_nmds$df_ord, aes(x=x,y=y,color =Group,shape=Group) ,
+                                                 size = 2.5,stroke=1.25, alpha = 0.15, show.legend=c(color = FALSE, shape =FALSE) )+ 
+  scale_color_manual( values= c ("#ce5b46", "#1f66e5","#752c1f","#93CCEA"),  guide = "none")+
+  scale_shape_manual(values = c (19,19,24,24)) +
+  geom_polygon(data = ggordiplot_nmds$df_hull, aes (x= x, y = y, fill = Group), alpha = 0.15 , show.legend=c(fill = FALSE)) +
+  scale_fill_manual( values= c ("#ce5b46", "#1f66e5","#752c1f","#93CCEA"), guide = "none")+
+  theme_clean_mod() + 
+  xlab("NMDS1") + ylab("NMDS2") +
+  ylim(-0.45 ,0.55) +
+  ggnewscale::new_scale_color() +
+  geom_point(data = nmdss.sp.scores2_lev2_norepeats %>% filter (KO %in% limited), 
+             aes (x=MDS1, y = MDS2,  color = Level.2) ,size = 1.5, shape = 15, inherit.aes = F) +
+  geom_text_repel(data = nmdss.sp.scores2_lev2_norepeats %>% filter (KO %in% limited), 
+                  aes (x=MDS1, y = MDS2, label = short, color = Level.2) ,size = 4, max.overlaps = 15, inherit.aes = F) +
+  scale_color_manual(values =c23, name = "KEGG Level 2") 
+  
+bothnmds2 = ggarrange(egg::tag_facet (ggordiplot_nmds_full, tag_pool = "a" ), 
+                     egg::tag_facet (ggordiplot_nmds_wpoints , tag_pool = "b" ) ,widths = c(1.1,2))
+bothnmds2
+
+
+# Create the filename with the date
+fig2Name <- paste0("Figures/Figure_2_", current_date, ".png")
+
+ggsave (fig2Name, bothnmds2 , width = 12.5, height = 5.25, units = "in", dpi = 300)
+
+
+# Save as SVG
+ggsave("Figures/Figure_2.svg", plot = bothnmds2, width = 12.5, height = 5.25, units = "in", dpi = 300)
+ 
+```
+# DESEQ2 results 
+
+## gene-level results: bring in  DESEQ2 results 
+
+```{r}
+deseq_all_init = read.csv("L2/DESeq2_genes_ALL_00721.csv")
+deseq_all= merge(deseq_all_init, ko_desc, by = "KO", all.x =T)
+
+deseq_all$sig =  if_else (deseq_all$padj<0.05 & abs(deseq_all$log2FoldChange )>= 0.5  , "sig","ns")
+table (deseq_all$sig)
+deseq_all$posorneg <- case_when(deseq_all$log2FoldChange>0 ~ "pos",
+                                deseq_all$log2FoldChange<0 ~ "neg")
+
+deseq_all$short = gsub(",.*", "", gsub("\\;.*", "", deseq_all$ko_description))
+
+
+deseq_all_amb_lin =  deseq_all %>% filter(TrtSig=="Ambient" & Term == "Linear") 
+deseq_all_amb_quad =  deseq_all %>% filter(TrtSig=="Ambient" & Term == "Quadratic") 
+deseq_all_drt_lin =  deseq_all %>% filter(TrtSig=="Drought" & Term == "Linear") 
+deseq_all_drt_quad =  deseq_all %>% filter(TrtSig=="Drought" & Term == "Quadratic") 
+
+# subset for SIG based on cutoff! i did LFC 0.5 and alpha 0.5 in results function 
+deseq_sig_gwc =deseq_all %>% filter(padj<0.05 & abs(log2FoldChange )> 0.5 )
+
+write.csv (deseq_sig_gwc ,"List of DEGs Supplemental.csv",  row.names = F )
+
+deseq_sig_gwc %>% group_by(posorneg, TrtSig) %>% dplyr::count()  
+
+
+# link with level 2
+ko_level2_wspore_nocor =  ko_level2_wspore  %>% filter (Level.2 %in% lev2_sums_nocor$Level.2 )
+deseq_sig_gwc_wLev2 <- merge(deseq_sig_gwc , ko_level2_wspore_nocor , by = "KO", all.x=TRUE) # merge with KO
+
+write.csv (deseq_sig_gwc_wLev2 ,"List of DEGs Supplemental_lev2.csv",  row.names = F )
+
+
+```
+
+## create deduped datasets - if sig in quad, not sig in lin
+
+```{r}
+min( abs (deseq_sig_gwc$log2FoldChange) )
+max(deseq_sig_gwc$pvalue)
+
+deseq_sig_gwc_quad_amb = deseq_sig_gwc %>% filter(Term=="Quadratic" & TrtSig =='Ambient')
+deseq_sig_gwc_quad_drt = deseq_sig_gwc %>% filter(Term=="Quadratic" & TrtSig =='Drought')
+
+deseq_sig_gwc_lin_amb = deseq_sig_gwc %>% filter(Term=="Linear" & TrtSig =='Ambient' & ! KO %in% deseq_sig_gwc_quad_amb$KO)
+deseq_sig_gwc_lin_drt = deseq_sig_gwc %>% filter(Term=="Linear" & TrtSig =='Drought' & ! KO %in% deseq_sig_gwc_quad_drt$KO)
+
+
+deseq_sig_gwc_deduped = rbind (deseq_sig_gwc_lin_amb, deseq_sig_gwc_lin_drt,deseq_sig_gwc_quad_amb, deseq_sig_gwc_quad_drt )
+deseq_sig_gwc_dedupedc_wLev2 <- merge(deseq_sig_gwc_deduped , ko_level2_wspore_nocor , by = "KO", all.x=TRUE) # merge with KO
+
+# maake sure this is NOT with level 2
+deseq_sig_gwc_deduped %>% group_by (TrtSig, Term, posorneg) %>% dplyr::count()
+deseq_sig_gwc_deduped %>% group_by (TrtSig) %>% dplyr::count()
+
+max(deseq_sig_gwc_deduped$log2FoldChange)
+min(deseq_sig_gwc_deduped$log2FoldChange)
+
+
+# counts %>% filter (RainTrt =="Ambient" & KO %in% deseq_sig_gwc_lin_amb$KO) %>% group_by(KO) %>% mutate (percofmax = deseq_counts / max (deseq_counts)) %>% ggplot (aes (x = ActualWP, y = percofmax, color = KO)) + geom_smooth(alpha = 0.5, se = FALSE) + scale_x_continuous(trans = ggforce::trans_reverser('log10'), labels = label_trueminus) + theme_classic() + theme (legend.position = "none")
+# 
+# counts %>% filter (RainTrt =="Drought" & KO %in% deseq_sig_gwc_lin_drt$KO) %>% group_by(KO) %>% mutate (percofmax = deseq_counts / max (deseq_counts)) %>% ggplot (aes (x = logWP, y = percofmax, color = KO)) + geom_smooth(alpha = 0.5, se = FALSE) +  theme_classic() + theme (legend.position = "none")
+
+# counts %>% filter (KO == 'K03594') %>% 
+#   ggplot (aes (x = logWP, y = deseq_counts, color = RainTrt)) + geom_point() + geom_smooth() + theme_bw()
+ 
+```
+
+
+
+# MA plots - separate for ambient and drought, linear and quadratic.
+```{r, fig.width = 10, fig.height = 9 }
+colorscheme = as.character(paletteer::paletteer_d("ggthemes::Summer") )
+
+deseq_all_drt_lin$sig
+#############
+### DROUGHT LINEAR FIRST
+#############
+deseq_all_drt_lin$sig_cat <- case_when(  deseq_all_drt_lin$sig == "ns" ~"ns",
+                                   deseq_all_drt_lin$KO %in% ko_level2_wspore$KO[ko_level2_wspore$Level.2=="Sporulation"] ~ "Sporulation",
+                                   deseq_all_drt_lin$KO %in% ko_level2_wspore$KO[ko_level2_wspore$Level.2=="Cell motility"] ~ "Cell motility",
+                                   deseq_all_drt_lin$KO %in% ko_level2_wspore$KO[ko_level2_wspore$Level.2=="Membrane transport"] ~ "Membrane transport",
+                                   deseq_all_drt_lin$KO %in% ko_level2_wspore$KO[ko_level2_wspore$Level.2=="Biosynthesis of other secondary metabolites"] ~ "Biosynthesis of other secondary metabolites",
+                                   deseq_all_drt_lin$KO %in% ko_level2_wspore$KO[ko_level2_wspore$Level.2=="Replication and repair"] ~ "Replication and repair",
+                                   deseq_all_drt_lin$KO %in% ko_level2_wspore$KO[ko_level2_wspore$Level.2=="Biofilm production"] ~ "Biofilm production",
+                                   
+                                   deseq_all_drt_lin$KO %in% ko_level2_wspore$KO[ko_level2_wspore$Level.2=="Carbohydrate metabolism"] ~ "Carbohydrate metabolism",
+                                   deseq_all_drt_lin$KO %in% ko_level2_wspore$KO[ko_level2_wspore$Level.2=="Transport and catabolism"] ~ "Transport and catabolism"
+                                   
+)
+
+
+levels(as.factor (deseq_all_drt_lin$sig_cat) )
+ma_plot_colors <-
+  setNames( c(colorscheme[1],colorscheme[7], 
+              colorscheme[3],colorscheme[5],
+              colorscheme[6],"lightgrey",
+              colorscheme[8],colorscheme[4])
+            , levels(as.factor (deseq_all_drt_lin$sig_cat)  ) )
+
+deseq_all_drt_lin$posorneg_sig = case_when(  deseq_all_drt_lin$sig==  "ns" ~"ns"  ,   (deseq_all_drt_lin$KO  %in%  deseq_sig_gwc_lin_drt$KO ) ~ deseq_all_drt_lin$posorneg)
+
+MA_plot_drt_lin = ggplot (deseq_all_drt_lin, aes (color =  sig_cat, 
+                                          y = log2FoldChange , x = log2 (baseMean )) , size = posorneg_sig ) +
+  geom_hline (yintercept = 0) + geom_hline (yintercept = 0.5, linetype = "dashed", color = "grey") +
+  geom_hline (yintercept = -0.5, linetype = "dashed", color = "grey") + 
+  geom_point( aes (alpha = posorneg_sig)) + 
+  scale_alpha_manual(values = c (.9,.4,.9), guide = 'none')  +
+  # geom_text_repel ( data = deseq_all_drt_lin %>% filter (sig == "sig" ),
+  #                                             aes (x =  log2 (baseMean ) , label = short), size = 2.8, max.overlaps = 50)  +
+  geom_text ( data = deseq_all_drt_lin %>% filter (sig == "sig" ),
+                                              aes (x =  log2 (baseMean ) + 0.6, label = short), size = 2.8)  +
+ # scale_color_manual(values = c ("#E02331FF","#ED852FFF", "#DEAA7CFF" , "#15BBF3FF",
+     #                            "#75E1F6FF", "grey", "#8D2063FF", "#350275FF", "#107D6EFF", "grey30")) +
+  scale_color_manual(values = ma_plot_colors ) +
+  scale_size_manual(values = c (3,1,3), guide = 'none') + 
+  xlab (bquote(~log[2] ~ "(base mean)")) + 
+  ylab(bquote(~log[2] ~ "fold change")) + 
+  annotate (x = 1, y = 30, label = "(b) Drought linear" , geom = "text", hjust = 0, size = 5) + 
+  annotate (x = 1, y = 27, label = "n = 72" , geom = "text", hjust = 0) + 
+  annotate (x = 1, y = -18, label = "n = 45" , geom = "text", hjust = 0) + 
+ # scale_x_continuous(expand = c(0, 0))  +
+  coord_cartesian(ylim = c(-20, 35)) + 
+  scale_x_continuous(expand = c(0, 0), limits = c(0, NA)) +
+  scale_y_continuous( limits = c(NA, NA)) +
+  theme_clean_mod_nodotlines()
+
+
+#############
+### AMBIENT LINEAR 
+#############
+deseq_all_amb_lin$sig_cat <- case_when(   deseq_all_amb_lin$sig == "ns" ~"ns",
+                                   deseq_all_amb_lin$KO %in% ko_level2_wspore$KO[ko_level2_wspore$Level.2=="Sporulation"] ~ "Sporulation",
+                                   deseq_all_amb_lin$KO %in% ko_level2_wspore$KO[ko_level2_wspore$Level.2=="Cell motility"] ~ "Cell motility",
+                                   deseq_all_amb_lin$KO %in% ko_level2_wspore$KO[ko_level2_wspore$Level.2=="Membrane transport"] ~ "Membrane transport",
+                                   deseq_all_amb_lin$KO %in% ko_level2_wspore$KO[ko_level2_wspore$Level.2=="Biosynthesis of other secondary metabolites"] ~ "Biosynthesis of other secondary metabolites",
+                                   deseq_all_amb_lin$KO %in% ko_level2_wspore$KO[ko_level2_wspore$Level.2=="Replication and repair"] ~ "Replication and repair",
+                                   deseq_all_amb_lin$KO %in% ko_level2_wspore$KO[ko_level2_wspore$Level.2=="Biofilm production"] ~ "Biofilm production",
+                                   
+                                   deseq_all_amb_lin$KO %in% ko_level2_wspore$KO[ko_level2_wspore$Level.2=="Carbohydrate metabolism"] ~ "Carbohydrate metabolism",
+                                   deseq_all_amb_lin$KO %in% ko_level2_wspore$KO[ko_level2_wspore$Level.2=="Transport and catabolism"] ~ "Transport and catabolism"
+                                   
+)
+
+deseq_all_amb_lin$posorneg_sig = case_when(   deseq_all_amb_lin$sig == "ns" ~"ns"  ,   
+                                              (deseq_all_amb_lin$KO  %in%  deseq_sig_gwc_lin_amb$KO ) ~ deseq_all_amb_lin$posorneg)
+
+MA_plot_amb_lin = ggplot (deseq_all_amb_lin, aes (color =  sig_cat, 
+                                          y = log2FoldChange , x = log2 (baseMean )) , size = posorneg_sig ) +
+  geom_hline (yintercept = 0) + geom_hline (yintercept = 0.5, linetype = "dashed", color = "grey") +
+  geom_hline (yintercept = -0.5, linetype = "dashed", color = "grey") + 
+  geom_point( aes (alpha = posorneg_sig)) + 
+  scale_alpha_manual(values = c (.9,.4,.9), guide = 'none')  +
+  # geom_text_repel ( data = deseq_all_amb_lin %>% filter (sig == "sig" ),
+  #                                             aes (x =  log2 (baseMean ), label = short), size = 2.8, max.overlaps = 50)  +
+  geom_text ( data = deseq_all_amb_lin %>% filter (sig == "sig" ),
+                                              aes (x =  log2 (baseMean ) + 0.6, label = short), size = 2.8)  +
+ # scale_color_manual(values = c ("#E02331FF","#ED852FFF", "#DEAA7CFF" , "#15BBF3FF",
+     #                            "#75E1F6FF", "grey", "#8D2063FF", "#350275FF", "#107D6EFF", "grey30")) +
+  scale_color_manual(values = ma_plot_colors ) +
+  scale_size_manual(values = c (3,1,3), guide = 'none') + 
+  xlab (bquote(~log[2] ~ "(base mean)")) + 
+  ylab(bquote(~log[2] ~ "fold change")) + 
+  annotate (x = 1, y = 30, label = "(a) Ambient linear" , geom = "text", hjust = 0, size = 5) + 
+  annotate (x = 1, y = 27, label = "n = 45" , geom = "text", hjust = 0) + 
+  annotate (x = 1, y = -18, label = "n = 13" , geom = "text", hjust = 0) + 
+ # scale_x_continuous(expand = c(0, 0))  +
+  coord_cartesian(ylim = c(-20, 35)) + 
+  scale_x_continuous(expand = c(0, 0), limits = c(0, NA)) +
+  scale_y_continuous( limits = c(NA, NA)) +
+  theme_clean_mod_nodotlines()
+
+
+#############
+### DROUGHT QUADRATIC
+#############
+deseq_all_drt_quad$sig_cat <- case_when(  deseq_all_drt_quad$sig == "ns" ~"ns",
+                                   deseq_all_drt_quad$KO %in% ko_level2_wspore$KO[ko_level2_wspore$Level.2=="Sporulation"] ~ "Sporulation",
+                                   deseq_all_drt_quad$KO %in% ko_level2_wspore$KO[ko_level2_wspore$Level.2=="Cell motility"] ~ "Cell motility",
+                                   deseq_all_drt_quad$KO %in% ko_level2_wspore$KO[ko_level2_wspore$Level.2=="Membrane transport"] ~ "Membrane transport",
+                                   deseq_all_drt_quad$KO %in% ko_level2_wspore$KO[ko_level2_wspore$Level.2=="Biosynthesis of other secondary metabolites"] ~ "Biosynthesis of other secondary metabolites",
+                                   deseq_all_drt_quad$KO %in% ko_level2_wspore$KO[ko_level2_wspore$Level.2=="Replication and repair"] ~ "Replication and repair",
+                                   deseq_all_drt_quad$KO %in% ko_level2_wspore$KO[ko_level2_wspore$Level.2=="Biofilm production"] ~ "Biofilm production",
+                                   
+                                   deseq_all_drt_quad$KO %in% ko_level2_wspore$KO[ko_level2_wspore$Level.2=="Carbohydrate metabolism"] ~ "Carbohydrate metabolism",
+                                   deseq_all_drt_quad$KO %in% ko_level2_wspore$KO[ko_level2_wspore$Level.2=="Transport and catabolism"] ~ "Transport and catabolism"
+                                   
+)
+
+table (deseq_all_drt_quad$sig_cat)
+
+deseq_all_drt_quad$posorneg_sig = case_when(  deseq_all_drt_quad$sig == "ns" ~"ns",  
+                                      (deseq_all_drt_quad$KO  %in%  deseq_sig_gwc_quad_drt$KO ) ~ deseq_all_drt_quad$posorneg)
+
+MA_plot_drt_quad = ggplot (deseq_all_drt_quad, aes (color =  sig_cat, 
+                                          y = log2FoldChange , x = log2 (baseMean )) , size = posorneg_sig ) +
+  geom_hline (yintercept = 0) + geom_hline (yintercept = 0.5, lineype = "dashed", color = "grey") +
+  geom_hline (yintercept = -0.5, linetype = "dashed", color = "grey") + 
+  geom_point( aes (alpha = posorneg_sig)) + 
+  scale_alpha_manual(values = c (.9,.4,.9), guide = 'none')  +
+  # geom_text_repel ( data = deseq_all_drt_quad %>% filter (sig == "sig" ),
+  #                                             aes (x =  log2 (baseMean ) , label = short), size = 2.8, max.overlaps = 50)  +
+  geom_text ( data = deseq_all_drt_quad %>% filter (sig == "sig" ),
+                                              aes (x =  log2 (baseMean ) + 0.6, label = short), size = 2.8)  +
+ # scale_color_manual(values = c ("#E02331FF","#ED852FFF", "#DEAA7CFF" , "#15BBF3FF",
+     #                            "#75E1F6FF", "grey", "#8D2063FF", "#350275FF", "#107D6EFF", "grey30")) +
+  scale_color_manual(values = ma_plot_colors ) +
+  scale_size_manual(values = c (3,1,3), guide = 'none') + 
+  xlab (bquote(~log[2] ~ "(base mean)")) + 
+  ylab(bquote(~log[2] ~ "fold change")) + 
+  annotate (x = 1, y = 30, label = "(d) Drought quadratic" , geom = "text", hjust = 0, size = 5) + 
+  annotate (x = 1, y = 27, label = "n = 1" , geom = "text", hjust = 0) + 
+  annotate (x = 1, y = -18, label = "n = 42" , geom = "text", hjust = 0) + 
+ # scale_x_continuous(expand = c(0, 0))  +
+  coord_cartesian(ylim = c(-20, 35)) + 
+  scale_x_continuous(expand = c(0, 0), limits = c(0, NA)) +
+  scale_y_continuous( limits = c(NA, NA)) +
+  theme_clean_mod_nodotlines()
+
+#############
+### AMBIENT QUADRATIC
+#############
+deseq_all_amb_quad$sig_cat <- case_when(deseq_all_amb_quad$sig == "ns" ~"ns",
+                                   deseq_all_amb_quad$KO %in% ko_level2_wspore$KO[ko_level2_wspore$Level.2=="Sporulation"] ~ "Sporulation",
+                                   deseq_all_amb_quad$KO %in% ko_level2_wspore$KO[ko_level2_wspore$Level.2=="Cell motility"] ~ "Cell motility",
+                                   deseq_all_amb_quad$KO %in% ko_level2_wspore$KO[ko_level2_wspore$Level.2=="Membrane transport"] ~ "Membrane transport",
+                                   deseq_all_amb_quad$KO %in% ko_level2_wspore$KO[ko_level2_wspore$Level.2=="Biosynthesis of other secondary metabolites"] ~ "Biosynthesis of other secondary metabolites",
+                                   deseq_all_amb_quad$KO %in% ko_level2_wspore$KO[ko_level2_wspore$Level.2=="Replication and repair"] ~ "Replication and repair",
+                                   deseq_all_amb_quad$KO %in% ko_level2_wspore$KO[ko_level2_wspore$Level.2=="Biofilm production"] ~ "Biofilm production",
+                                   
+                                   deseq_all_amb_quad$KO %in% ko_level2_wspore$KO[ko_level2_wspore$Level.2=="Carbohydrate metabolism"] ~ "Carbohydrate metabolism",
+                                   deseq_all_amb_quad$KO %in% ko_level2_wspore$KO[ko_level2_wspore$Level.2=="Transport and catabolism"] ~ "Transport and catabolism"
+                                   
+)
+
+deseq_all_amb_quad$posorneg_sig = case_when( deseq_all_amb_quad$sig == "ns" ~"ns",  
+                                             (deseq_all_amb_quad$KO  %in%  deseq_sig_gwc_quad_amb$KO ) ~ deseq_all_amb_quad$posorneg)
+
+MA_plot_amb_quad = ggplot (deseq_all_amb_quad, aes (color =  sig_cat, 
+                                          y = log2FoldChange , x = log2 (baseMean )) , size = posorneg_sig ) +
+  geom_hline (yintercept = 0) + geom_hline (yintercept = 0.5, linetype = "dashed", color = "grey") +
+  geom_hline (yintercept = -0.5, linetype = "dashed", color = "grey") + 
+  geom_point( aes (alpha = posorneg_sig)) + 
+  scale_alpha_manual(values = c (.9,.4,.9), guide = 'none')  +
+  # geom_text_repel ( data = deseq_all_amb_quad %>% filter (sig == "sig" ),
+  #                                             aes (x =  log2 (baseMean ) , label = short), size = 2.8, max.overlaps = 50)  +
+  geom_text( data = deseq_all_amb_quad %>% filter (sig == "sig" ),
+                                              aes (x =  log2 (baseMean ) + 0.6, label = short), size = 2.8)  +
+ # scale_color_manual(values = c ("#E02331FF","#ED852FFF", "#DEAA7CFF" , "#15BBF3FF",
+     #                            "#75E1F6FF", "grey", "#8D2063FF", "#350275FF", "#107D6EFF", "grey30")) +
+  scale_color_manual(values = ma_plot_colors ) +
+  scale_size_manual(values = c (3,1,3), guide = 'none') + 
+  xlab (bquote(~log[2] ~ "(base mean)")) + 
+  ylab(bquote(~log[2] ~ "fold change")) + 
+  annotate (x = 1, y = 30, label = "(c) Ambient quadratic" , geom = "text", hjust = 0, size = 5) + 
+ annotate (x = 1, y = 27, label = "n = 0" , geom = "text", hjust = 0) + 
+  annotate (x = 1, y = -18, label = "n = 24" , geom = "text", hjust = 0) + 
+ # scale_x_continuous(expand = c(0, 0))  +
+  coord_cartesian(ylim = c(-20, 35)) + 
+  scale_x_continuous(expand = c(0, 0), limits = c(0, NA)) +
+  scale_y_continuous( limits = c(NA, NA)) +
+  theme_clean_mod_nodotlines()
+
+
+
+maplots_all_linear_quad = ggarrange(MA_plot_amb_lin, MA_plot_amb_quad,
+                                    MA_plot_drt_lin,  MA_plot_drt_quad,
+                                    nrow=2, ncol=2 , common.legend = T)
+
+
+
+fig3Name <- paste0("Figures/Figure_3_", current_date, ".png")
+
+maplots_all_linear_quad
+
+ggsave (fig3Name, plot = maplots_all_linear_quad , width =10, height=9, units = "in" )
+# png(filename=fig3Name, width =12, height=11, units = "in", res = 300)
+# maplots_all_linear_quad
+# dev.off()
+
+# svg
+ggsave ("Figures/Figure_3.svg", plot = maplots_all_linear_quad , width =10, height=9, dpi = 300 )
+
+
+counts %>% filter (	KO == "K05343") %>% ggplot (aes ( x = logWP,  y = deseq_counts)) + geom_point() + theme_bw()
+counts %>% filter (	KO == "K01194") %>% ggplot (aes ( x = logWP,  y = deseq_counts)) + geom_point() + theme_bw()
+
+
+```
+
+## the grid counts figure for number of significant genes
+
+```{r}
+
+
+
+# how many KO genes are observed total in A and D treatments, in each level 2??x
+kos_present_perlev2 = ko_counts_lev2 %>% 
+  filter (Level.2 %in% lev2_sums_nocor$Level.2)  %>% # remove highly highly correlated ...
+  filter(deseq_counts !=0) %>%  # no zeroes so the rows arenot coutned 
+  select(Level.2, RainTrt,KO) %>%  
+  group_by(Level.2, RainTrt) %>% 
+  summarize(KO_counts = n_distinct(KO))   # how many KOs present in A and D treatments?
+
+names(deseq_sig_gwc_deduped)
+# how many KO genes changed significantly with water potential ?????
+kos_sig_perlev2 = deseq_sig_gwc_dedupedc_wLev2 %>%  # of the sig genes with level 2 - DEDUPED OR NO???
+  filter(!is.na(Level.2)   ) %>% # remove highly highly correlated ...
+  #filter( Level.2 != "Aging",
+  #        Level.2 != "Chromosome",
+   #       Level.2 != "Cellular community - eukaryotes") %>% 
+  #droplevels(Level.2) %>% 
+  filter(abs(log2FoldChange) >= 0.5)  %>%  # CAN OPTIONALLY FILTER BY THIS!!!
+  group_by(Level.2, TrtSig, Term,posorneg) %>% 
+  summarize(KO_counts_sig = n_distinct(KO)) %>%  #how many of those genes inc or dec?  
+  ungroup() %>% # ungroup
+  complete(Level.2, TrtSig, Term,posorneg, fill = list(KO_counts_sig = 0)) # make sure all combos are there even if 0s across the board!!
+
+
+kos_sig_perlev2_pos = kos_sig_perlev2 %>% filter(posorneg =="pos")
+kos_sig_perlev2_neg = kos_sig_perlev2 %>% filter(posorneg =="neg")
+
+# combine number of genes present with counts of genes that are sig
+kos_present_plus_sig_perlev2 = merge(kos_present_perlev2,kos_sig_perlev2 , 
+                                     by.x = c ("Level.2", "RainTrt" ), by.y = c ("Level.2", "TrtSig" ), all = TRUE)
+
+kos_present_plus_sig_perlev2$percsig = round ( (kos_present_plus_sig_perlev2$KO_counts_sig / kos_present_plus_sig_perlev2$KO_counts * 100 ), digits=1)
+
+
+SigDeseq_LFCLevel.2_0.5 <- deseq_sig_gwc_dedupedc_wLev2 %>%  # deduped or no?
+  filter(abs(log2FoldChange) >= 0.5) %>% 
+  group_by(Level.2,Term, TrtSig ) %>%  # here, raintrt is which the KO was sig for !!
+  summarise(avgLFC=mean(log2FoldChange)) %>% # mean LFC for sig genes for each lev 2
+  ungroup() %>%
+  complete(Level.2, TrtSig, Term, fill = list(avgLFC = 0))
+
+
+```
+### gene grid
+```{r, fig.width=12, 7.5}
+linevector  <- seq(from = 1.5, to = 35.5, by = 1)
+
+kos_present_plus_sig_perlev2$percsig_na <- na_if(kos_present_plus_sig_perlev2$percsig, 0)
+
+max (kos_present_plus_sig_perlev2$KO_counts_sig, na.rm = T)
+max (SigDeseq_LFCLevel.2_0.5$avgLFC)
+min (SigDeseq_LFCLevel.2_0.5$avgLFC)
+
+
+genegrids_lev2lost = kos_present_plus_sig_perlev2 %>% filter (posorneg =="pos"& !is.na(Level.2) & RainTrt== "Ambient") %>% distinct (Level.2) %>% as.vector() %>% unlist()
+
+# AMBIENT
+numpresent_plot_a =kos_present_plus_sig_perlev2  %>% filter(Level.2 %in%  genegrids_lev2lost) %>% 
+  ggplot(aes (x=RainTrt, y = Level.2, fill = KO_counts) ) +
+  geom_tile() + 
+  scale_fill_gradient2(low = "white", high =  'forestgreen') +
+  geom_text(aes(label = KO_counts)) +
+  xlab(NULL) +
+  scale_y_discrete(limits=rev, drop = FALSE) + 
+  theme_clean_mod3() +
+  geom_hline(yintercept=linevector , alpha = 0.4, linetype = "dotted") +
+  #theme(axis.title.x=element_blank(),
+  #      axis.text.x=element_blank(),
+  #      axis.ticks.x=element_blank())  +
+  theme(legend.position= "none") +
+  facet_wrap(~"# present") +
+  theme (plot.margin = margin(t = 18,  # Top margin
+                       r = 6,  # Right margin
+                       b = 6,  # Bottom margin
+                       l = 6) )
+
+numsig_plot_nolab_a =ggplot() +
+  geom_tile(data = (kos_present_plus_sig_perlev2 %>% filter (posorneg =="pos"& !is.na(Level.2) & RainTrt== "Ambient")),
+            aes (x=posorneg, y = Level.2, fill = KO_counts_sig) )+
+  scale_fill_gradientn(colors = c("white", 'cornflowerblue'), limits = c(0,18)) +
+  #scale_fill_gradientn(colors = c("white", 'cornflowerblue'), limits = c(0,4), na.value = "white") +
+  geom_text(data = (kos_present_plus_sig_perlev2 %>% filter( posorneg =="pos"& !is.na(Level.2) & RainTrt== "Ambient")),
+            aes(x=posorneg, y = Level.2, label = KO_counts_sig)) +
+  ggnewscale::new_scale_fill() +
+  geom_tile(data = (kos_present_plus_sig_perlev2 %>% filter( posorneg =="neg"& !is.na(Level.2) & RainTrt== "Ambient")),
+            aes (x=posorneg, y = Level.2, fill = KO_counts_sig)) +
+  scale_fill_gradientn(colors = c('white', 'firebrick3'), limits = c(0,18))  +
+  #scale_fill_gradientn(colors = c('white', 'firebrick3'), limits = c(0,4), na.value = 'white')  +
+  geom_text(data = (kos_present_plus_sig_perlev2 %>% filter( posorneg =="neg"& !is.na(Level.2) & RainTrt== "Ambient" )),
+            aes(x=posorneg, y = Level.2,label = KO_counts_sig)) +
+  scale_y_discrete(limits=rev, drop = FALSE) + 
+  theme_clean_mod3() +
+  geom_hline(yintercept=linevector , alpha = 0.4, linetype = "dotted") +
+  theme(legend.position = "none") + # the numbers are there, do not really need a theme!
+  xlab(NULL) +
+  theme(axis.title.y=element_blank(),
+        axis.text.y=element_blank(),
+       axis.ticks.y=element_blank())  +
+  #theme(
+  #  strip.background = element_blank(),
+  #  strip.text.x = element_blank()
+  #) +
+  facet_wrap(~Term, nrow=1) +
+  theme (plot.margin = margin(t = 18,  # Top margin
+                              r = 6,  # Right margin
+                              b = 6,  # Bottom margin
+                              l = 6) )
+
+
+sig_deseq_LFC_0.5_nolab_a = ggplot(subset(SigDeseq_LFCLevel.2_0.5 , !is.na(Level.2) & TrtSig== "Ambient" ), aes (x=Level.2,y = TrtSig, fill =avgLFC)) +
+  geom_tile() +
+  geom_text(aes (label = round (avgLFC, 1))) +
+  scale_fill_gradient2(low = "red", high =  'blue', limits = c(-13,10), midpoint = 0) +
+  #scale_fill_manual(values = c( "#619EFF", "#ffc261"))  + theme_bw() +
+  #scale_fill_manual(values = c( "firebrick2", "cornflowerblue"))  + theme_bw() +
+  #scale_x_discrete(limits=rev, labels = c('Lin','Quad')) + 
+  theme_clean_mod3() +
+  facet_wrap(~Term) +
+  geom_vline(xintercept=linevector , alpha = 0.4, linetype = "dotted") +
+  scale_x_discrete(limits=rev, drop = FALSE) + 
+  ylab(NULL) +
+  coord_flip()   + theme(legend.position = "none") + 
+  theme(axis.title.y=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank(),
+        legend.position = "none")  +
+  theme (plot.margin = margin(t = 18,  # Top margin
+                              r = 6,  # Right margin
+                              b = 6,  # Bottom margin
+                              l = 6) )
+
+
+# Drought
+numpresent_plot_d =kos_present_plus_sig_perlev2 %>%  filter(Level.2 %in%  genegrids_lev2lost) %>% 
+  ggplot(aes (x=RainTrt, y = Level.2, fill = KO_counts) ) +
+  geom_tile() + 
+  scale_fill_gradient2(low = "white", high =  'forestgreen') +
+  geom_text(aes(label = KO_counts)) +
+  xlab(NULL) +
+  scale_y_discrete(limits=rev, drop = FALSE) + 
+  theme_clean_mod3() +
+  geom_hline(yintercept=linevector , alpha = 0.4, linetype = "dotted") +
+  theme(axis.title.y=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank(),
+        legend.position = "none")  +
+  theme(legend.position = "none") +
+  facet_wrap(~"# present") +
+  theme (plot.margin = margin(t = 18,  # Top margin
+                              r = 6,  # Right margin
+                              b = 6,  # Bottom margin
+                              l = 6) )
+
+numsig_plot_nolab_d =ggplot() +
+  geom_tile(data = (kos_present_plus_sig_perlev2 %>% filter (posorneg =="pos"& !is.na(Level.2) & RainTrt== "Drought")),
+            aes (x=posorneg, y = Level.2, fill = KO_counts_sig) )+
+  scale_fill_gradientn(colors = c("white", 'cornflowerblue'), limits = c(0,18)) +
+  #scale_fill_gradientn(colors = c("white", 'cornflowerblue'), limits = c(0,4), na.value = "white") +
+  geom_text(data = (kos_present_plus_sig_perlev2 %>% filter( posorneg =="pos"& !is.na(Level.2) & RainTrt== "Drought")),
+            aes(x=posorneg, y = Level.2, label = KO_counts_sig)) +
+  ggnewscale::new_scale_fill() +
+  geom_tile(data = (kos_present_plus_sig_perlev2 %>% filter( posorneg =="neg"& !is.na(Level.2) & RainTrt== "Drought")),
+            aes (x=posorneg, y = Level.2, fill = KO_counts_sig)) +
+  scale_fill_gradientn(colors = c('white', 'firebrick3'), limits = c(0,18))  +
+  #scale_fill_gradientn(colors = c('white', 'firebrick3'), limits = c(0,4), na.value = "white")  +
+  geom_text(data = (kos_present_plus_sig_perlev2 %>% filter( posorneg =="neg"& !is.na(Level.2) & RainTrt== "Drought" )),
+            aes(x=posorneg, y = Level.2,label = KO_counts_sig)) +
+  scale_y_discrete(limits=rev, drop = FALSE) + 
+  theme_clean_mod3() +
+  geom_hline(yintercept=linevector , alpha = 0.4, linetype = "dotted") +
+  theme(legend.position = "none") + # the numbers are there, do not really need a theme!
+  xlab(NULL) +
+  theme(axis.title.y=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank())  +
+  #theme(
+  #  strip.background = element_blank(),
+  #  strip.text.x = element_blank()
+  #) +
+  facet_wrap(~Term, nrow=1) +
+  theme (plot.margin = margin(t = 18,  # Top margin
+                              r = 6,  # Right margin
+                              b = 6,  # Bottom margin
+                              l = 6) )
+
+sig_deseq_LFC_0.5_nolab_d = ggplot(subset(SigDeseq_LFCLevel.2_0.5 , !is.na(Level.2) & TrtSig== "Drought" ), aes (x=Level.2,y = TrtSig, fill =avgLFC)) +
+  geom_tile() +
+  geom_text(aes (label = round (avgLFC, 1))) +
+  scale_fill_gradient2(low = "red", high =  'blue', limits = c(-13,10), midpoint = 0) +
+  #scale_fill_manual(values = c( "#619EFF", "#ffc261"))  + theme_bw() +
+  #scale_fill_manual(values = c( "firebrick2", "cornflowerblue"))  + theme_bw() +
+  #scale_x_discrete(limits=rev, labels = c('Lin','Quad')) + 
+  theme_clean_mod3() +
+  geom_vline(xintercept=linevector , alpha = 0.4, linetype = "dotted") +
+  facet_wrap(~Term) +
+  scale_x_discrete(limits=rev, drop = FALSE) + 
+  ylab(NULL) +
+  coord_flip()   + theme(legend.position = "right") +
+  theme(axis.title.y=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank(),
+        legend.position = "none")  +
+  theme (plot.margin = margin(t = 18,  # Top margin
+                              r = 6,  # Right margin
+                              b = 6,  # Bottom margin
+                              l = 6) )
+
+
+grid_fig = ggarrange(numpresent_plot_a, numsig_plot_nolab_a, sig_deseq_LFC_0.5_nolab_a,
+          numpresent_plot_d, numsig_plot_nolab_d, sig_deseq_LFC_0.5_nolab_d,ncol = 6, widths = c(4.5,3,1.5,1.5,3,1.5),
+          labels = c ("Ambient", " ", " ", "Drought", " ", " "))      
+          #labels = "auto" )
+
+
+grid_fig
+
+fig4name <- paste0("Figures/Figure_4_", current_date, ".png")
+
+ggsave (fig4name, grid_fig ,  width =12, height = 6, unit = "in", dpi = 300)
+
+ggsave ("Figures/Figure_4.svg", grid_fig ,  width =12, height = 6,  dpi = 300)
+
+```
+
+#Analysis of KEGG level 2 gene functional categoriess 
+
+## LINEAR MODEL for level 2 analysis!!!!
+
+```{r}
+strictControl <- lmerControl(optCtrl = list(
+  algorithm = "NLOPT_LN_NELDERMEAD",
+  xtol_abs = 1e-12,
+  ftol_abs = 1e-12))
+
+megamod_lin <- lmer(Lev2Count~ Level.2*logWP*RainTrt + (1|plot) , data = lev2_sums_nocor,  REML=FALSE , control = strictControl)
+
+#summary(megamod_lin)
+car::Anova(megamod_lin, type = "III") # level2 * logWP
+r.squaredGLMM(megamod_lin)
+
+# emmeans post-hoc looking at linear - trends with wp
+megamod_lin_emtrends_WP = emtrends(megamod_lin,  ~ Level.2, var = "logWP",  infer=TRUE)  %>% as_tibble() #THIS IS WHAT I WANT !!!
+megamod_lin_emtrends_WP$p.forfig = case_when(megamod_lin_emtrends_WP$p.value > 0.001 ~ paste ("=", round (megamod_lin_emtrends_WP$p.value, 3) ),
+                                              megamod_lin_emtrends_WP$p.value < 0.001 ~ "< 0.001" )
+megamod_lin_emtrends_WP_sig = megamod_lin_emtrends_WP %>% filter (p.value<0.05)
+
+# emmeans post-hoc looking at linear -  do the SLOPES differ woth raintrt?
+megamod_lin_emtrends_WP_avsD =emtrends(megamod_lin,  pairwise~RainTrt|Level.2, var = "logWP", infer=TRUE) 
+megamod_lin_emtrends_WP_avsD_sig = megamod_lin_emtrends_WP_avsD$contrasts %>% as.data.frame () %>% filter (p.value < 0.1)
+
+megamod_lin_emtrends_WP_avsD_sig$p.forfig = case_when(megamod_lin_emtrends_WP_avsD_sig$p.value > 0.001 ~ paste ("=", round (megamod_lin_emtrends_WP_avsD_sig$p.value, 3) ),
+                                                      megamod_lin_emtrends_WP_avsD_sig$p.value < 0.001 ~ "< 0.001" )
+# NONE DIFFER !!!! when measured this way....
+
+#  emmeans post-hoc looking at linear - do the MEANS differ with raintrt??
+megamod_lin_emmeans_emm = emmeans(megamod_lin,  pairwise~RainTrt|Level.2, var = "logWP")
+megamod_lin_emmeans_avsD =emmeans(megamod_lin,  pairwise~RainTrt|Level.2, var = "logWP", infer=TRUE) 
+megamod_lin_emmeans_avsD_sig = megamod_lin_emmeans_avsD$contrasts %>% as.data.frame () %>% filter (p.value < 0.1)
+megamod_lin_emmeans_avsD_sig$p.value
+megamod_lin_emmeans_avsD_sig$p.forfig = case_when(megamod_lin_emmeans_avsD_sig$p.value > 0.001 ~ paste ("=", round (megamod_lin_emmeans_avsD_sig$p.value, 3) ),
+                                                  megamod_lin_emmeans_avsD_sig$p.value < 0.001 ~ "< 0.001" )
+
+
+```
+
+## QUADRATIC level 2 model 
+```{r}
+megamod_quad <- lmer(Lev2Count~Level.2*poly(logWP,2)*RainTrt + (1|plot)   , data = lev2_sums_nocor,  REML=FALSE , control = strictControl) #lmer #+ (1|plot)  + (1|Level.2)
+
+#summary(megamod_quad )
+#car::Anova(megamod_quad , type = "III")
+anova(megamod_quad ,  megamod_lin)
+r.squaredGLMM(megamod_quad)
+AICc(megamod_lin, megamod_quad) # this says go with the quaadratic
+AICctab(megamod_lin, megamod_quad) # this says go with the quadratic
+
+# looking at  quadratic - trends with wp (across treatments)
+megamod_quad_emtrends_WP_init = emtrends(megamod_quad,  ~ Level.2, var = "logWP", max.degree=2, infer=TRUE)  #THIS IS WHAT I WANT !!!
+megamod_quad_emtrends_WP = test (megamod_quad_emtrends_WP_init )
+megamod_quad_emtrends_WP$p.forfig = case_when(megamod_quad_emtrends_WP$p.value > 0.001 ~ paste ("=", round (megamod_quad_emtrends_WP$p.value, 3) ),
+                                                  megamod_quad_emtrends_WP$p.value < 0.001 ~ "< 0.001" )
+
+# do the shapes of the curves differ with raintrt? - emtrends
+megamod_quad_emtrends_WP_avsD_full =emtrends(megamod_quad,  ~RainTrt|Level.2, var = "logWP", max.degree=2) 
+megamod_quad_emtrends_WP_avsD_full
+coef (megamod_quad_emtrends_WP_avsD_full)
+#megamod_quad_emtrends_WP_avsD_full@model.info$model.matrix
+megamod_quad_emtrends_WP_avsD =emtrends(megamod_quad,  pairwise~RainTrt|Level.2, var = "logWP", max.degree=2, infer=TRUE) 
+megamod_quad_emtrends_WP_avsD_sig = megamod_quad_emtrends_WP_avsD$contrasts %>% as.data.frame () %>% filter (p.value < 0.1)
+
+# do the means  differ with raintrt? - emmeans
+megamod_quad_emmeans_avsD =emmeans(megamod_quad,  pairwise~RainTrt|Level.2, var = "logWP", max.degree=2, infer=TRUE) 
+megamod_quad_emmeans_avsD_sig = megamod_quad_emmeans_avsD$contrasts %>% as.data.frame () %>% filter (p.value < 0.1)
+
+# list of sig for figures
+megamod_quad_emtrends_WP_sig = megamod_quad_emtrends_WP %>% filter (p.value<0.1)
+
+megamod_quad_emtrends_WP_NOTsig = megamod_quad_emtrends_WP %>% filter (p.value>0.05) # list of those that are not sig
+megamod_quad_emtrends_WP_quad = megamod_quad_emtrends_WP %>% filter(p.value<0.05 & degree == "quadratic") # list of those w/sig quadratic
+megamod_quad_emtrends_WP_lin = megamod_quad_emtrends_WP %>% filter(p.value<0.05 &  # list of those w/sig linear but NOT quadratic.
+                                                                     degree == "linear" & 
+                                                                     !Level.2 %in% megamod_quad_emtrends_WP_quad$Level.2)
+
+
+
+
+```
+## getting model fits for plotting 
+
+```{r}
+# plot model predictions - quadraatic
+plotdata_quad = emmip(
+  megamod_quad, 
+  ~RainTrt~logWP|Level.2 ,
+  CIs = FALSE,
+  at = list(logWP = c(-3, -2.5, -2, -1.5, -1, -0.5, 0))) # quadratic
+
+plotdata_lin = emmip(
+  megamod_lin, 
+  ~RainTrt~logWP|Level.2 ,
+  CIs = FALSE,
+  at = list(logWP = c(-3, -2.5, -2, -1.5, -1, -0.5, 0))) # linear
+
+# quad - significant
+plotdata_quad_sela <- plotdata_quad$data 
+plotdata_quad_sel <- plotdata_quad_sela %>% filter(Level.2 %in% megamod_quad_emtrends_WP_quad$Level.2)
+plotdata_quad_sel$ActualWP =10 ^(-plotdata_quad_sel$logWP)
+
+# lin - significant linear fit but in quad model
+plotdata_lin_sela <- plotdata_lin$data
+plotdata_lin_sel <- plotdata_lin_sela %>% filter(Level.2 %in% megamod_quad_emtrends_WP_lin$Level.2)
+plotdata_lin_sel$ActualWP =10 ^(-plotdata_lin_sel$logWP)
+
+# significant linear fit (linear model, no quadratic term)
+plotdata_lin_sel_forlinfig <- plotdata_lin$data
+plotdata_lin_sel_forlinfig_good <- plotdata_lin_sel_forlinfig %>% filter(Level.2 %in% megamod_lin_emtrends_WP_sig$Level.2)
+plotdata_lin_sel_forlinfig_good$ActualWP =10 ^(-plotdata_lin_sel_forlinfig_good$logWP)
+
+
+
+```
+
+## level 2 plot - quadratic 
+```{r, fig.width=13, fig.height=12}
+WPplot_allfacets = ggplot() +  #  quadratic plot 
+  geom_ribbon(data =plotdata_quad_sel, 
+              aes(x=ActualWP, y=yvar/1000, ymin=(yvar-SE)/1000, ymax=(yvar+SE)/1000, fill=RainTrt), alpha=.5, color="white") +
+  geom_line(data=plotdata_quad_sel , 
+            aes(x=ActualWP, y=yvar/1000, color=RainTrt ) ) +
+  geom_ribbon(data =plotdata_lin_sel, 
+             aes(x=ActualWP, y=yvar/1000, ymin=(yvar-SE)/1000, ymax=(yvar+SE)/1000, fill=RainTrt), alpha=.5, color="white") +
+  geom_line(data=plotdata_lin_sel , 
+            aes(x=ActualWP, y=yvar/1000, color=RainTrt ) ) +
+  geom_point(data=lev2_sums_nocor, aes(x=ActualWP, y=Lev2Count/1000,color=RainTrt)) +
+  scale_color_manual(values = c( "#3281fb",  "#fb9900")) +
+  scale_fill_manual(values = c( "#619EFF", "#fb9900"))  +
+  scale_x_continuous(trans = ggforce::trans_reverser('log10'), labels = label_trueminus) +
+  geom_text (data = megamod_quad_emtrends_WP_avsD_sig, aes (label =paste("WP * Trt: P = ",  round (p.value, 3))  ), x = 0, y = 70, hjust = 1,vjust =0) + # this works
+  #geom_text (data = megamod_quad_emtrends_WP_avsD_sig, aes (label =paste("A vs D:", "italic(y)==", round (p.value, 2))  ), parse=TRUE,x = -1, y = 50) + # thiss does not
+  #geom_text (data = megamod_quad_emtrends_WP_avsD_sig, aes (label =bquote(~"A vs D:"~italic(P))~p.value  ), x = -1, y = 50) +
+  #geom_text(data= filter(emtrends_megamod_results_sig, RainTrt=="Ambient"), aes(x=-3,y=0,label=p.value.label), size=3) + 
+  #geom_text(data= filter(emtrends_megamod_results_sig, RainTrt=="Drought"), aes(x=-1,y=0,label=p.value.label), size=3) + 
+  #geom_text( data = megamod_quad_emtrends_WP_avsD_sig , x=-3,y=0,aes(label = p.value) ) +
+          # x = -0.05, y=-0.3, label = bquote ("A vs D:"~italic(P) ~"= 0.012")  , color = "black",hjust=0, size = 4)  +
+  geom_text (data =megamod_quad_emtrends_WP_quad, aes (label =paste("WP: P",  p.forfig)  ), x = 0, y = 1, hjust =1, vjust =0) + 
+  geom_text (data =megamod_quad_emtrends_WP_lin, aes (label =paste("WP: P",  p.forfig)  ), x = 0, y = 1, hjust = 1, vjust = 0) + 
+  ylab("Total reads (x1000) KEGG Level 2") +
+  xlab(bquote(~Log[10] ~ "Water potential (bars)")  )+
+  expand_limits(y=0) +
+  theme_clean_mod() + 
+  theme(legend.title=element_blank())+
+  theme(legend.position = c(0.9, 0.1)) +
+  facet_wrap(~ Level.2, scales = "free", labeller = label_wrap_gen(width = 25)) 
+
+WPplot_allfacets
+
+# Create the filename with the date
+fig5Name <- paste0("Figures/Figure_5_", current_date, ".png")
+
+ggsave (fig5Name, WPplot_allfacets ,  width=13, height=12, units="in", dpi=300)
+ 
+ggsave ("Figures/Figure_5.svg", WPplot_allfacets ,  width=13, height=12,  dpi=300)
+ 
+
+WPplot_sigfacets = ggplot() +  #  quadratic plot 
+  geom_ribbon(data =plotdata_quad_sel,
+              aes(x=ActualWP, y=yvar/1000, ymin=(yvar-SE)/1000, ymax=(yvar+SE)/1000, fill=RainTrt), alpha=.5, color="white") +    # error for quad
+  geom_line(data=plotdata_quad_sel ,  
+            aes(x=ActualWP, y=yvar/1000, color=RainTrt ) ) +  # line for quad
+  geom_ribbon(data =plotdata_lin_sel, 
+             aes(x=ActualWP, y=yvar/1000, ymin=(yvar-SE)/1000, ymax=(yvar+SE)/1000, fill=RainTrt), alpha=.5, color="white") + # error for lin
+  geom_line(data=plotdata_lin_sel , 
+            aes(x=ActualWP, y=yvar/1000, color=RainTrt ) ) + # line for quad
+  geom_point(data=lev2_sums_nocor %>% filter (Level.2 %in% plotdata_quad_sel$Level.2 | Level.2 %in% plotdata_lin_sel$Level.2  ), aes(x=ActualWP, y=Lev2Count/1000,color=RainTrt)) +
+  scale_color_manual(values = c( "#3281fb",  "#fb9900")) +
+  scale_fill_manual(values = c( "#619EFF", "#fb9900"))  +
+  scale_x_continuous(trans = ggforce::trans_reverser('log10'), labels = label_trueminus) +
+  geom_text (data = megamod_quad_emtrends_WP_avsD_sig, aes (label =paste("WP * Trt: P = ",  round (p.value, 3))  ), x = 0, y = 70, hjust = 1,vjust =0) + # this works
+  #geom_text (data = megamod_quad_emtrends_WP_avsD_sig, aes (label =paste("A vs D:", "italic(y)==", round (p.value, 2))  ), parse=TRUE,x = -1, y = 50) + # thiss does not
+  #geom_text (data = megamod_quad_emtrends_WP_avsD_sig, aes (label =bquote(~"A vs D:"~italic(P))~p.value  ), x = -1, y = 50) +
+  #geom_text(data= filter(emtrends_megamod_results_sig, RainTrt=="Ambient"), aes(x=-3,y=0,label=p.value.label), size=3) + 
+  #geom_text(data= filter(emtrends_megamod_results_sig, RainTrt=="Drought"), aes(x=-1,y=0,label=p.value.label), size=3) + 
+  #geom_text( data = megamod_quad_emtrends_WP_avsD_sig , x=-3,y=0,aes(label = p.value) ) +
+          # x = -0.05, y=-0.3, label = bquote ("A vs D:"~italic(P) ~"= 0.012")  , color = "black",hjust=0, size = 4)  +
+  geom_text (data =megamod_quad_emtrends_WP_quad, aes (label =paste("WP: P",  p.forfig)  ), x = 0, y = 1, hjust =1, vjust =0) + 
+  geom_text (data =megamod_quad_emtrends_WP_lin, aes (label =paste("WP: P",  p.forfig)  ), x = 0, y = 1, hjust = 1, vjust = 0) + 
+  ylab("Total reads (x1000) KEGG Level 2") +
+  xlab(bquote(~Log[10] ~ "Water potential (bars)")  )+
+  expand_limits(y=0) +
+  theme_clean_mod() + 
+  theme(legend.title=element_blank())+
+  theme(legend.position = c(0.9, 0.1)) +
+  facet_wrap(~ Level.2, scales = "free", labeller = label_wrap_gen(width = 25)) 
+
+fig5_selName <- paste0("Figures/Figure_5_selpanels", current_date, ".png")
+
+ggsave (fig5_selName, WPplot_sigfacets ,  width=10, height=8, units="in", dpi=300)
+
+# svg
+ggsave ("Figures/Figure_5_selpanels.svg", WPplot_sigfacets ,  width=10, height=8,  dpi=300)
+
+#ggsave("Figures/WPplot_allfacets_07282025.png", WPplot_allfacets, width=13, height=12, units="in", dpi=300)
+```
+# TRADEOFFs between level 2 categories that varied significantly with water potential
+
+```{r, fig.width = 11, fig.height = 11}
+names(lev2_sums_wide)
+allsigcat_lev2 = c  (unique(plotdata_quad_sel$Level.2), unique(plotdata_lin_sel$Level.2 ))
+
+lev2_sums_sitexsp_sigcat = as.data.frame(lev2_sums_sitexsp_nocor) %>% select (allsigcat_lev2) # all
+lev2_sums_wide_sigcat  = cbind(lev2_sums_wide_meta , lev2_sums_sitexsp_sigcat)
+dim(lev2_sums_wide)
+dim(lev2_sums_wide_sigcat)
+names(lev2_sums_wide_sigcat)
+
+my_fn <- function(data, mapping, method="p", use="pairwise", ...){
+  
+  # grab data
+  x <- eval_data_col(data, mapping$x)
+  y <- eval_data_col(data, mapping$y)
+  
+  # calculate correlation
+  corr <- cor(x, y, method=method, use=use)
+  
+  # calculate colour based on correlation value
+  # Here I have set a correlation of minus one to blue, 
+  # zero to white, and one to red 
+  # Change this to suit: possibly extend to add as an argument of `my_fn`
+  colFn <- colorRampPalette(c("red", "white", "blue"), interpolate ='spline')
+  fill <- colFn(100)[findInterval(corr, seq(-1, 1, length=100))]
+  
+  ggally_cor(data = data, mapping = mapping, colour = I("black"),size =4, ...) + 
+    theme_void(base_family = "sans") +
+    theme(panel.background = element_rect(fill=fill),
+          strip.background = element_rect(linetype = 0), strip.text = element_text())
+}
+
+names(lev2_sums_wide_sigcat)
+ggplot2::theme_set(theme_clean_mod2())
+head(lev2_sums_wide_sigcat)
+
+
+lev2_sums_wide_sigcat_ordered = lev2_sums_wide_sigcat[, c ("SampleID"   ,   "RainTrt"   ,  "logWP"   ,  "ActualWP"   ,   "WP_categorical"  ,  "CO2_eq" ,"qCO2"  ,"Membrane transport","Cell motility"  ,"Carbohydrate metabolism" ,"Amino acid metabolism", "Metabolism of cofactors and vitamins" ,"Signal transduction" ,   "Transcription" , "Folding, sorting and degradation" ,  "Environmental adaptation" ,  "Biofilm production"      )]
+lev2_sums_wide_sigcat_ordered_cats = c ("Membrane transport","Cell motility"  ,"Carbohydrate metabolism" ,"Amino acid metabolism", "Metabolism of cofactors and vitamins" ,"Signal transduction" ,   "Transcription" , "Folding, sorting and degradation" ,  "Environmental adaptation" ,  "Biofilm production"      )
+
+lev2_sums_wide_sigcat_ordered   %>% group_by (RainTrt) %>% summarize(across(all_of(lev2_sums_wide_sigcat_ordered_cats), mean))  %>% t() %>% knitr::kable(digits=0)
+lev2_sums_wide_sigcat_div1000_orderedd = lev2_sums_wide_sigcat_ordered %>%  select (lev2_sums_wide_sigcat_ordered_cats) /1000 
+min(lev2_sums_wide_sigcat_div1000_orderedd  )
+names (lev2_sums_wide_sigcat_div1000_orderedd )
+
+
+cor_lev2_plot = GGally::ggpairs(lev2_sums_wide_sigcat_div1000_orderedd,
+                                    mapping = ggplot2::aes(colour= substr(lev2_sums_wide_sigcat_ordered$RainTrt, 1, 1)) ,
+                                    upper = list(continuous = my_fn) ,
+                                    lower = list (continuous = wrap ("points" , alpha = 0.7)) ,
+                                    diag = list( continuous = wrap("densityDiag", alpha=0.5 )), 
+                                    labeller = label_wrap_gen(width = 15))   +
+  scale_color_manual(values = c( "#3281fb",  "#fb9900")) +
+  scale_fill_manual(values = c( "#619EFF", "#fb9900"))  +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+
+fsd = ko_counts_lev2 %>% filter (Level.2 =="Folding, sorting and degradation")
+#ko_desc %>% filter (KO %in% fsd$KO) %>% View()
+
+deseq_sig_gwc %>% filter ( abs(log2FoldChange) > 0.5 & str_detect(ko_description, "HSP" ))
+deseq_sig_gwc_wLev2 %>% filter ( abs(log2FoldChange) > 0.5 & Level.2 =="Folding, sorting and degradation")
+
+# svglite("Figures/correlation_plot.svg", width = 12,height = 12)
+# cor_lev2_plot
+# dev.off()
+
+fig6Name <- paste0("Figures/Figure_6_", current_date, ".png")
+
+cor_lev2_plot
+
+ggsave(fig6Name, cor_lev2_plot,width = 11.5,height = 11.5, units = "in" , dpi =300)
+
+# svg
+ggsave("Figures/Figure_6.svg", cor_lev2_plot,width = 11.5,height = 11.5, dpi =300)
+
+```
+
+
+### Add on correlation with CO2 flux 
+
+```{r}
+
+
+head(lev2_sums_wide_sigcat_ordered)
+
+# what I want is to... i dont know
+
+
+ggduo (lev2_sums_wide_sigcat_ordered %>%  filter (RainTrt=="Ambient"),  lev2_sums_wide_sigcat_ordered_cats, "CO2_eq" , 
+       mapping = ggplot2::aes(colour= substr(lev2_sums_wide_sigcat_ordered$RainTrt, 1, 1)) ,
+       types = list(continuous = my_fn)) 
+
+
+ggcorr_wco2_amb = ggduo (lev2_sums_wide_sigcat_ordered %>%  filter (RainTrt=="Ambient"),  lev2_sums_wide_sigcat_ordered_cats, "CO2_eq" , 
+       #mapping = ggplot2::aes(colour= substr(lev2_sums_wide_sigcat_ordered$RainTrt, 1, 1)) ,
+       types = list(continuous = my_fn)) 
+#cor(ggcorr_wco2_amb) %>% as.data.frame() %>%  select(RainTrt)
+
+
+
+
+ggcorr_wco2_drt = ggduo (lev2_sums_wide_sigcat_ordered %>%  filter (RainTrt=="Drought"),  lev2_sums_wide_sigcat_ordered_cats, "CO2_eq" , 
+       #mapping = ggplot2::aes(colour= substr(lev2_sums_wide_sigcat_ordered$RainTrt, 1, 1)) ,
+       types = list(continuous = my_fn)) 
+
+fig6aName <- paste0("Figures/Figure_6a_", current_date, ".png")
+ggsave (fig6aName , plot= ggcorr_wco2_amb, width = 11.5,height = 1, units = "in" , dpi =300)
+
+# ssvg
+ggsave ("Figures/Figure_6a.svg" , plot= ggcorr_wco2_amb, width = 11.5,height = 1, units = "in" , dpi =300)
+
+fig6dName <- paste0("Figures/Figure_6d_", current_date, ".png")
+ggsave (fig6dName , plot= ggcorr_wco2_drt, width = 11.5,height = 1, units = "in" , dpi =300)
+
+#ssvg
+ggsave ("Figures/Figure_6d.svg" , plot= ggcorr_wco2_drt, width = 11.5,height = 1, units = "in" , dpi =300)
+
+cor.results =lev2_sums_nocor %>%
+                filter (Level.2 %in% lev2_sums_wide_sigcat_ordered_cats) %>% 
+                group_by(Level.2, RainTrt) %>%
+                rstatix::cor_test(CO2_eq,Lev2Count, method = "pearson")
+
+```
+
+
